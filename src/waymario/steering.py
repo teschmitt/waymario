@@ -47,9 +47,19 @@ class OpenCVSteerer(Steerer):
         cfg = self._config
         height, width = frame.shape[:2]
 
-        top = int(height * cfg.roi_top)
-        bottom = int(height * cfg.roi_bottom)
-        roi = frame[top:bottom, :]
+        # Crop to this player's screen quadrant first.
+        px0, py0, px1, py1 = cfg.player_region()
+        sub_x0 = int(width * px0)
+        sub_y0 = int(height * py0)
+        sub_x1 = int(width * px1)
+        sub_y1 = int(height * py1)
+        subframe = frame[sub_y0:sub_y1, sub_x0:sub_x1]
+        sub_h, sub_w = subframe.shape[:2]
+
+        # ROI is relative to the player's sub-frame.
+        top = int(sub_h * cfg.roi_top)
+        bottom = int(sub_h * cfg.roi_bottom)
+        roi = subframe[top:bottom, :]
 
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
         _, mask = cv2.threshold(gray, cfg.bright_threshold, 255, cv2.THRESH_BINARY)
@@ -61,12 +71,12 @@ class OpenCVSteerer(Steerer):
             # No trustworthy track in view — coast straight rather than chase noise.
             return SteeringDecision(steering=0.0, confidence=confidence, centroid_x=None)
 
-        # Centroid x of the lit pixels.
+        # Centroid x of the lit pixels within the sub-frame.
         moments = cv2.moments(mask, binaryImage=True)
         cx = moments["m10"] / moments["m00"]
 
-        # Normalize to -1 (left edge) .. +1 (right edge) of the frame.
-        offset = (cx - width / 2) / (width / 2)
+        # Normalize to -1 (left edge) .. +1 (right edge) of the sub-frame.
+        offset = (cx - sub_w / 2) / (sub_w / 2)
         steering = _clamp(offset * cfg.steering_gain)
 
         return SteeringDecision(steering=steering, confidence=confidence, centroid_x=offset)

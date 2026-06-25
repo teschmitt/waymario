@@ -24,10 +24,17 @@ def _build_link(args: argparse.Namespace, config: Config) -> ControllerLink:
     return SerialLink(config.serial_port, config.baud)
 
 
+def _apply_player_args(args: argparse.Namespace, config: Config) -> None:
+    """Copy --players / --player from CLI args into config."""
+    config.players = args.players
+    config.player = args.player
+
+
 def _cmd_run(args: argparse.Namespace) -> int:
     config = Config()
     if args.port:
         config.serial_port = args.port
+    _apply_player_args(args, config)
     with _build_source(args, config) as source, _build_link(args, config) as link:
         run(source, OpenCVSteerer(config), link, config)
     return 0
@@ -41,25 +48,35 @@ def _cmd_preview(args: argparse.Namespace) -> int:
     from .stream import MJPEGServer
 
     config = Config()
+    _apply_player_args(args, config)
     steerer = OpenCVSteerer(config)
 
     use_stream = args.stream
+
+    def _subframe(frame: "cv2.typing.MatLike"):
+        """Return (subframe, x0, y0) — the player's screen quadrant and its offset."""
+        h, w = frame.shape[:2]
+        px0, py0, px1, py1 = config.player_region()
+        x0, y0 = int(w * px0), int(h * py0)
+        x1, y1 = int(w * px1), int(h * py1)
+        return frame[y0:y1, x0:x1], x0, y0
 
     def _process_frame(frame: "cv2.typing.MatLike") -> "cv2.typing.MatLike":
         """Annotate frame with ROI box, centroid line and HUD text."""
         decision = steerer.decide(frame)
         state = drive_policy(decision, config)
-        height, width = frame.shape[:2]
-        top = int(height * config.roi_top)
-        bottom = int(height * config.roi_bottom)
-        cv2.rectangle(frame, (0, top), (width, bottom), (0, 255, 0), 1)
+        sub, x0, y0 = _subframe(frame)
+        sub_h, sub_w = sub.shape[:2]
+        top = y0 + int(sub_h * config.roi_top)
+        bottom = y0 + int(sub_h * config.roi_bottom)
+        cv2.rectangle(frame, (x0, top), (x0 + sub_w, bottom), (0, 255, 0), 1)
         if decision.centroid_x is not None:
-            cx = int((decision.centroid_x + 1) / 2 * width)
+            cx = x0 + int((decision.centroid_x + 1) / 2 * sub_w)
             cv2.line(frame, (cx, top), (cx, bottom), (0, 0, 255), 2)
         cv2.putText(
             frame,
-            f"steer={decision.steering:+.2f} conf={decision.confidence:.3f} stick={state.stick_x:+d}",
-            (10, 30),
+            f"P{config.player} steer={decision.steering:+.2f} conf={decision.confidence:.3f} stick={state.stick_x:+d}",
+            (x0 + 10, y0 + 30),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.7,
             (255, 255, 255),
@@ -68,34 +85,34 @@ def _cmd_preview(args: argparse.Namespace) -> int:
         return frame
 
     def _debug_mosaic(frame: "cv2.typing.MatLike") -> "cv2.typing.MatLike":
-        """Build a 2x2 mosaic showing every preprocessing step."""
+        """Build a 2x2 mosaic of the player's subframe showing every preprocessing step."""
         import numpy as np
         decision = steerer.decide(frame)  # run CV once, reuse below
-        state = drive_policy(decision, config)  # noqa: F841 — kept for future HUD use
-        height, width = frame.shape[:2]
-        top = int(height * config.roi_top)
-        bottom = int(height * config.roi_bottom)
+        sub, _x0, _y0 = _subframe(frame)
+        sub_h, sub_w = sub.shape[:2]
+        top = int(sub_h * config.roi_top)
+        bottom = int(sub_h * config.roi_bottom)
 
-        # Panel 1 — original with overlay
-        p1 = frame.copy()
-        cv2.rectangle(p1, (0, top), (width, bottom), (0, 255, 0), 2)
+        # Panel 1 — player subframe with overlay
+        p1 = sub.copy()
+        cv2.rectangle(p1, (0, top), (sub_w, bottom), (0, 255, 0), 2)
         if decision.centroid_x is not None:
-            cx = int((decision.centroid_x + 1) / 2 * width)
+            cx = int((decision.centroid_x + 1) / 2 * sub_w)
             cv2.line(p1, (cx, top), (cx, bottom), (0, 0, 255), 2)
-        cv2.putText(p1, f"1: original  steer={decision.steering:+.2f}",
+        cv2.putText(p1, f"1: P{config.player} subframe  steer={decision.steering:+.2f}",
                     (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 0), 2)
 
-        # Panel 2 — ROI crop (padded back to full size)
-        roi = frame[top:bottom, :]
-        p2 = np.zeros_like(frame)
+        # Panel 2 — ROI crop (padded back to subframe size)
+        roi = sub[top:bottom, :]
+        p2 = np.zeros_like(sub)
         p2[top:bottom, :] = roi
-        cv2.rectangle(p2, (0, top), (width, bottom), (0, 255, 0), 2)
+        cv2.rectangle(p2, (0, top), (sub_w, bottom), (0, 255, 0), 2)
         cv2.putText(p2, f"2: ROI  top={config.roi_top:.2f} bot={config.roi_bottom:.2f}",
                     (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 0), 2)
 
-        # Panel 3 — grayscale (converted back to BGR for stacking)
+        # Panel 3 — grayscale
         gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-        gray_full = np.zeros((height, width), dtype=np.uint8)
+        gray_full = np.zeros((sub_h, sub_w), dtype=np.uint8)
         gray_full[top:bottom, :] = gray_roi
         p3 = cv2.cvtColor(gray_full, cv2.COLOR_GRAY2BGR)
         cv2.putText(p3, "3: grayscale",
@@ -103,14 +120,14 @@ def _cmd_preview(args: argparse.Namespace) -> int:
 
         # Panel 4 — binary threshold mask
         _, mask_roi = cv2.threshold(gray_roi, config.bright_threshold, 255, cv2.THRESH_BINARY)
-        mask_full = np.zeros((height, width), dtype=np.uint8)
+        mask_full = np.zeros((sub_h, sub_w), dtype=np.uint8)
         mask_full[top:bottom, :] = mask_roi
         p4 = cv2.cvtColor(mask_full, cv2.COLOR_GRAY2BGR)
         lit_pct = mask_roi.mean() / 255 * 100
         cv2.putText(p4, f"4: threshold>{config.bright_threshold}  lit={lit_pct:.1f}%",
                     (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 0), 2)
         if decision.centroid_x is not None:
-            cx = int((decision.centroid_x + 1) / 2 * width)
+            cx = int((decision.centroid_x + 1) / 2 * sub_w)
             cv2.line(p4, (cx, top), (cx, bottom), (0, 0, 255), 2)
 
         # Stack into 2x2 grid
@@ -139,18 +156,38 @@ def _add_source_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--loop", action="store_true", help="loop the video file")
 
 
+def _add_player_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--players",
+        type=int,
+        default=1,
+        choices=[1, 2, 3, 4],
+        metavar="N",
+        help="total number of players in the game (1-4), sets the split-screen layout",
+    )
+    parser.add_argument(
+        "--player",
+        type=int,
+        default=1,
+        metavar="N",
+        help="which player slot this bot is (1-based, must be <= --players)",
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="waymario", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_run = sub.add_parser("run", help="drive live: capture -> steer -> controller")
     _add_source_args(p_run)
+    _add_player_args(p_run)
     p_run.add_argument("--port", help="serial port to the Pi Pico")
     p_run.add_argument("--no-serial", action="store_true", help="use NullLink (no Pico)")
     p_run.set_defaults(func=_cmd_run)
 
     p_preview = sub.add_parser("preview", help="show the CV overlay for tuning (no output)")
     _add_source_args(p_preview)
+    _add_player_args(p_preview)
     p_preview.add_argument(
         "--stream",
         action="store_true",
