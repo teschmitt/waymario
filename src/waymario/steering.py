@@ -89,3 +89,59 @@ class OpenCVSteerer(Steerer):
         steering = _clamp(offset * cfg.steering_gain)
 
         return SteeringDecision(steering=steering, confidence=confidence, centroid_x=offset)
+
+
+class HSVSteerer(Steerer):
+    """Read lateral position from the track's red->purple hue gradient.
+
+    Sample one small look-ahead patch, take the median hue of on-track
+    (saturated, bright) pixels, map it linearly to a cross-track error, and
+    steer against that error.
+    """
+
+    def __init__(self, config: Config) -> None:
+        self._config = config
+
+    def _patch_bounds(self, sub_h: int, sub_w: int) -> tuple[int, int, int, int]:
+        cfg = self._config
+        cx = cfg.hue_patch_cx * sub_w
+        cy = cfg.hue_patch_cy * sub_h
+        half_w = cfg.hue_patch_w * sub_w / 2.0
+        half_h = cfg.hue_patch_h * sub_h / 2.0
+        x0 = max(0, int(cx - half_w))
+        y0 = max(0, int(cy - half_h))
+        x1 = min(sub_w, int(cx + half_w))
+        y1 = min(sub_h, int(cy + half_h))
+        return x0, y0, x1, y1
+
+    def roi_box(self, sub_h: int, sub_w: int) -> tuple[int, int, int, int]:
+        return self._patch_bounds(sub_h, sub_w)
+
+    def decide(self, frame: np.ndarray) -> SteeringDecision:
+        cfg = self._config
+        subframe = _subframe(frame, cfg)
+        sub_h, sub_w = subframe.shape[:2]
+
+        x0, y0, x1, y1 = self._patch_bounds(sub_h, sub_w)
+        patch = subframe[y0:y1, x0:x1]
+        if patch.size == 0:
+            return SteeringDecision(steering=0.0, confidence=0.0, centroid_x=None, hue=None)
+
+        hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
+        h = hsv[:, :, 0]
+        s = hsv[:, :, 1]
+        v = hsv[:, :, 2]
+
+        gate = (s >= cfg.hue_min_sat) & (v >= cfg.hue_min_val)
+        passed = h[gate]
+        total = h.size
+        confidence = float(passed.size) / float(total) if total else 0.0
+
+        if passed.size == 0 or confidence < cfg.min_confidence:
+            # No trustworthy colored track in the patch — coast straight.
+            return SteeringDecision(steering=0.0, confidence=confidence, centroid_x=None, hue=None)
+
+        hue = float(np.median(passed))
+        e_y = _clamp(2.0 * (hue - cfg.hue_left) / (cfg.hue_right - cfg.hue_left) - 1.0)
+        steering = _clamp(-cfg.hue_gain * e_y)
+        return SteeringDecision(steering=steering, confidence=confidence, centroid_x=e_y, hue=hue)
