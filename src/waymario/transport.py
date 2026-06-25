@@ -1,33 +1,47 @@
 """Controller output transport.
 
-Serializes a ``ControllerState`` into the fixed 6-byte wire frame the Pi Pico
-expects, and sends it. ``SerialLink`` writes to the Pico over USB/UART;
+Serializes a ``ControllerState`` into the ASCII text frame the Pi Pico expects
+and sends it over serial. ``SerialLink`` writes to the Pico over USB/UART;
 ``NullLink`` just records frames so the full brain can run with no Pico attached.
 
-Wire frame (see firmware/README.md for the authoritative contract):
+Wire protocol (text, newline-terminated)::
 
-    [0xA5][btn_hi][btn_lo][stick_x][stick_y][xor]
+    <buttons>,<stick_x>,<stick_y>\n
 
-where ``xor`` is the XOR of the four payload bytes.
+    buttons : any combination of  a=A  b=B  z=Z  r=R  l=L  s=Start  (empty=none)
+    stick_x : -80..+80  (negative=left,  positive=right)
+    stick_y : -80..+80  (negative=down,  positive=up)
+
+Examples::
+
+    a,0,0       # A pressed, stick centred
+    ar,80,0     # A + R, full right
+    ,0,0        # no buttons, stick centred (neutral)
+    b,0,-80     # B only, full reverse
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from .control import ControllerState
+from .control import Button, ControllerState
 
-FRAME_HEADER = 0xA5
-FRAME_SIZE = 6
+# Map Button flags -> single-character token the Pico expects.
+_BUTTON_CHARS: list[tuple[Button, str]] = [
+    (Button.A,     "a"),
+    (Button.B,     "b"),
+    (Button.Z,     "z"),
+    (Button.R,     "r"),
+    (Button.L,     "l"),
+    (Button.START, "s"),
+]
 
 
 def encode(state: ControllerState) -> bytes:
-    """Encode a controller state into the 6-byte wire frame."""
-    payload = state.to_n64_bytes()
-    checksum = 0
-    for byte in payload:
-        checksum ^= byte
-    return bytes((FRAME_HEADER, *payload, checksum))
+    """Encode a ControllerState into the ASCII text frame the Pico expects."""
+    btn_str = "".join(ch for flag, ch in _BUTTON_CHARS if flag in state.buttons)
+    line = f"{btn_str},{state.stick_x},{state.stick_y}\n"
+    return line.encode()
 
 
 class ControllerLink(ABC):

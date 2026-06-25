@@ -35,6 +35,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
     config = Config()
     if args.port:
         config.serial_port = args.port
+    if args.device is not None:
+        config.device = args.device
     _apply_player_args(args, config)
     with _build_source(args, config) as source, _build_link(args, config) as link:
         run(source, OpenCVSteerer(config), link, config, debug=args.debug)
@@ -49,6 +51,8 @@ def _cmd_preview(args: argparse.Namespace) -> int:
     from .stream import MJPEGServer
 
     config = Config()
+    if args.device is not None:
+        config.device = args.device
     _apply_player_args(args, config)
     steerer = OpenCVSteerer(config)
     stuck = StuckDetector(config)
@@ -249,11 +253,13 @@ def main() -> int:
     p_run.add_argument("--port", help="serial port to the Pi Pico")
     p_run.add_argument("--no-serial", action="store_true", help="use NullLink (no Pico)")
     p_run.add_argument("--debug", action="store_true", help="print confidence/steering/phase every 10 frames")
+    p_run.add_argument("--device", type=int, default=None, metavar="N", help="V4L2 video device index (default: 1)")
     p_run.set_defaults(func=_cmd_run)
 
     p_preview = sub.add_parser("preview", help="show the CV overlay for tuning (no output)")
     _add_source_args(p_preview)
     _add_player_args(p_preview)
+    p_preview.add_argument("--device", type=int, default=None, metavar="N", help="V4L2 video device index (default: 1)")
     p_preview.add_argument(
         "--stream",
         action="store_true",

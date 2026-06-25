@@ -69,7 +69,7 @@ class Config:
     """Peak N64 analog magnitude to command (full deflection is ~80-84)."""
 
     # --- transport ---
-    serial_port: str = "/dev/ttyACM0"
+    serial_port: str = "/dev/ttyUSB0"
     baud: int = 115200
 
     # --- stuck detection & recovery ---
