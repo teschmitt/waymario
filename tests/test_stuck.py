@@ -5,7 +5,6 @@ from __future__ import annotations
 import numpy as np
 
 from waymario.config import Config
-from waymario.control import Button
 from waymario.steering import SteeringDecision
 from waymario.stuck import StuckDetector
 
@@ -15,7 +14,6 @@ def _config(**kwargs) -> Config:
     defaults = dict(
         stuck_frames=5,
         stuck_frame_diff_threshold=2.0,
-        recovery_reverse_frames=4,
         recovery_turn_frames=3,
         max_stick=80,
     )
@@ -82,7 +80,7 @@ def test_low_confidence_streak_triggers_recovery() -> None:
         result = det.update(f, _bad_decision())
     assert det.is_recovering
     assert result is not None
-    assert Button.B in result.buttons
+    assert result.stick_x != 0  # turning out of the wall
 
 
 # ---------------------------------------------------------------------------
@@ -98,11 +96,11 @@ def test_static_frame_triggers_recovery() -> None:
         result = det.update(frame, _good_decision())
     assert det.is_recovering
     assert result is not None
-    assert Button.B in result.buttons
+    assert result.stick_x != 0  # turning out of the wall
 
 
 # ---------------------------------------------------------------------------
-# Recovery sequence: REVERSE → TURN → NORMAL
+# Recovery sequence: TURN → NORMAL
 # ---------------------------------------------------------------------------
 
 def test_recovery_sequence_completes() -> None:
@@ -111,22 +109,13 @@ def test_recovery_sequence_completes() -> None:
     frame = _black_frame()
 
     # trigger recovery
-    for _ in range(cfg.stuck_frames + 1):
+    while not det.is_recovering:
         det.update(frame, _bad_decision())
-    assert det.is_recovering
 
-    # burn through REVERSE phase
-    for _ in range(cfg.recovery_reverse_frames):
+    # burn through the TURN phase — every recovery frame steers
+    while det.is_recovering:
         state = det.update(frame, _bad_decision())
         assert state is not None
-        assert Button.B in state.buttons
-        assert state.stick_y < 0  # reversing
-
-    # burn through TURN phase
-    for _ in range(cfg.recovery_turn_frames):
-        state = det.update(frame, _bad_decision())
-        assert state is not None
-        assert Button.B in state.buttons
         assert state.stick_x != 0  # turning
 
     # should be back to normal
@@ -139,17 +128,14 @@ def test_turn_direction_alternates() -> None:
     frame = _black_frame()
 
     def _trigger_and_get_turn_dir() -> int:
-        for _ in range(cfg.stuck_frames + 1):
-            det.update(frame, _bad_decision())
-        # skip reverse phase
-        for _ in range(cfg.recovery_reverse_frames):
-            det.update(frame, _bad_decision())
-        # first turn frame
-        state = det.update(frame, _bad_decision())
+        # drive until recovery kicks in; that frame holds the turn direction
+        state = None
+        while not det.is_recovering:
+            state = det.update(frame, _bad_decision())
         assert state is not None
         direction = 1 if state.stick_x > 0 else -1
-        # finish recovery
-        for _ in range(cfg.recovery_turn_frames):
+        # finish recovery so the next call starts a fresh one
+        while det.is_recovering:
             det.update(frame, _bad_decision())
         return direction
 
