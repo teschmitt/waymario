@@ -10,7 +10,8 @@
 
 ## Global Constraints
 
-- Run tests with `uv run pytest`; lint with `uv run ruff check`. Both must stay green.
+- Run tests with `uv run pytest` — must stay green.
+- Lint with `uv run ruff check` — **introduce no NEW errors**. The repo has 8 pre-existing, out-of-scope errors (6× `UP037` quoted annotations in `cli.py`, 1× `B904` in `config.py`, 1× `F401` in `tests/test_stuck.py`); leave them as-is. After a task, the error count must not exceed those 8, and no new error may appear in a file the task created or in steering-feature code.
 - Every module begins with `from __future__ import annotations` (existing convention).
 - OpenCV HSV ranges: `H ∈ [0,179]`, `S ∈ [0,255]`, `V ∈ [0,255]`.
 - `OpenCVSteerer` behavior must remain unchanged (its existing tests stay green).
@@ -517,11 +518,13 @@ Expected: FAIL — `ImportError: cannot import name '_build_parser'`.
 
 - [ ] **Step 3: Add the `--steerer` arg helper and refactor `main` into `_build_parser`**
 
-In `src/waymario/cli.py`, update the import and add a steerer-arg helper:
+In `src/waymario/cli.py`, update the import and add a steerer-arg helper. After this task both commands construct steerers via `build_steerer`, so `OpenCVSteerer` is no longer referenced in `cli.py` — replace the existing `from .steering import OpenCVSteerer` line with:
 
 ```python
-from .steering import OpenCVSteerer, build_steerer
+from .steering import build_steerer
 ```
+
+(Dropping `OpenCVSteerer` avoids a new `F401 unused import` ruff error.)
 
 Add this helper next to `_add_player_args`:
 
