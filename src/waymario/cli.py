@@ -6,11 +6,40 @@ import argparse
 
 from .capture import CaptureDeviceSource, FrameSource, VideoFileSource
 from .config import Config
-from .control import drive_policy
+from .control import Button, ControllerState, drive_policy
 from .drive import run
 from .steering import build_steerer
 from .stuck import StuckDetector
 from .transport import ControllerLink, NullLink, SerialLink
+
+# Button chips drawn in the preview HUD, in controller-ish order. Each lights up
+# when the corresponding bit is set in the controller state.
+_BUTTON_DISPLAY: list[tuple[str, Button]] = [
+    ("A", Button.A),
+    ("B", Button.B),
+    ("Z", Button.Z),
+    ("L", Button.L),
+    ("R", Button.R),
+    ("ST", Button.START),
+    ("C^", Button.C_UP),
+    ("Cv", Button.C_DOWN),
+    ("C<", Button.C_LEFT),
+    ("C>", Button.C_RIGHT),
+]
+
+
+def _draw_buttons(img, state: ControllerState, x: int, y: int) -> None:
+    """Draw a row of button chips at image-local (x, y); pressed ones light up green."""
+    import cv2
+
+    cw, ch, gap = 32, 22, 4
+    for i, (label, bit) in enumerate(_BUTTON_DISPLAY):
+        pressed = bool(state.buttons & bit)
+        bx = x + i * (cw + gap)
+        cv2.rectangle(img, (bx, y), (bx + cw, y + ch), (0, 200, 0) if pressed else (45, 45, 45), -1)
+        cv2.rectangle(img, (bx, y), (bx + cw, y + ch), (210, 210, 210), 1)
+        cv2.putText(img, label, (bx + 4, y + ch - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
+                    (255, 255, 255) if pressed else (140, 140, 140), 1)
 
 
 def _build_source(args: argparse.Namespace, config: Config) -> FrameSource:
@@ -36,6 +65,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
     if args.port:
         config.serial_port = args.port
     config.steerer = args.steerer
+    if args.device is not None:
+        config.device = args.device
     _apply_player_args(args, config)
     with _build_source(args, config) as source, _build_link(args, config) as link:
         run(source, build_steerer(config), link, config, debug=args.debug)
@@ -49,6 +80,8 @@ def _cmd_preview(args: argparse.Namespace) -> int:
     from .stream import MJPEGServer
 
     config = Config()
+    if args.device is not None:
+        config.device = args.device
     _apply_player_args(args, config)
     config.steerer = args.steerer
     steerer = build_steerer(config)
@@ -80,6 +113,7 @@ def _cmd_preview(args: argparse.Namespace) -> int:
         )
         cv2.putText(frame, text, (x0 + 8, y0 + 26),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        _draw_buttons(frame, state, x0 + 8, y0 + 42)
 
     def _process_frame(frame: "cv2.typing.MatLike") -> "cv2.typing.MatLike":
         """Annotate frame with the active steerer's ROI box, position line, HUD."""
@@ -95,7 +129,7 @@ def _cmd_preview(args: argparse.Namespace) -> int:
             cx = x0 + int((decision.lateral + 1) / 2 * sub_w)
             cv2.line(frame, (cx, y0 + ry0), (cx, y0 + ry1), (0, 0, 255), 2)
         _hud(frame, decision, state, phase)
-        return frame
+        return frame, decision, state, phase
 
     def _debug_mosaic(frame: "cv2.typing.MatLike") -> "cv2.typing.MatLike":
         """Build a 2x2 mosaic of the player's subframe showing every preprocessing step."""
@@ -120,6 +154,7 @@ def _cmd_preview(args: argparse.Namespace) -> int:
         cv2.putText(p1,
                     f"1:[{phase}] conf={decision.confidence:.3f} steer={decision.steering:+.2f} stick=({state.stick_x:+d},{state.stick_y:+d})",
                     (8, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2)
+        _draw_buttons(p1, state, 8, 42)
 
         # Panel 2 — ROI crop (padded back to subframe size)
         roi = sub[top:bottom, :]
@@ -152,9 +187,12 @@ def _cmd_preview(args: argparse.Namespace) -> int:
         # Stack into 2x2 grid
         top_row = np.hstack([p1, p2])
         bot_row = np.hstack([p3, p4])
-        return np.vstack([top_row, bot_row])
+        return np.vstack([top_row, bot_row]), decision, state, phase
 
     process = _debug_mosaic if (args.debug and config.steerer == "brightness") else _process_frame
+
+    if args.capture_frames:
+        return _capture(args, source_builder=lambda: _build_source(args, config), process=process)
 
     import time
     frame_period = 1.0 / args.stream_fps
@@ -163,7 +201,7 @@ def _cmd_preview(args: argparse.Namespace) -> int:
         with _build_source(args, config) as source, MJPEGServer(port=args.stream_port) as server:
             for frame in source.frames():
                 t0 = time.monotonic()
-                server.push(process(frame))
+                server.push(process(frame)[0])
                 elapsed = time.monotonic() - t0
                 if elapsed < frame_period:
                     time.sleep(frame_period - elapsed)
@@ -171,13 +209,46 @@ def _cmd_preview(args: argparse.Namespace) -> int:
         with _build_source(args, config) as source:
             for frame in source.frames():
                 t0 = time.monotonic()
-                cv2.imshow("waymario preview", process(frame))
+                cv2.imshow("waymario preview", process(frame)[0])
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     break
                 elapsed = time.monotonic() - t0
                 if elapsed < frame_period:
                     time.sleep(frame_period - elapsed)
         cv2.destroyAllWindows()
+    return 0
+
+
+def _capture(args: argparse.Namespace, source_builder, process) -> int:
+    """Headless: process and save every Nth frame to a directory, with a metadata line
+    per saved frame so a reader can pick which PNGs to open. No window, no stream."""
+    import os
+    import tempfile
+
+    import cv2
+
+    out_dir = args.capture_dir or tempfile.mkdtemp(prefix="waymario-capture-")
+    os.makedirs(out_dir, exist_ok=True)
+    print(f"Capture dir: {out_dir}", flush=True)
+
+    saved = 0
+    with source_builder() as source:
+        for i, frame in enumerate(source.frames()):
+            if i % args.capture_frames:
+                continue
+            img, decision, state, phase = process(frame)
+            name = f"frame_{i:06d}.png"
+            cv2.imwrite(os.path.join(out_dir, name), img)
+            lateral = "none" if decision.lateral is None else f"{decision.lateral:+.3f}"
+            print(
+                f"{name}  conf={decision.confidence:.3f} steer={decision.steering:+.2f} "
+                f"stick=({state.stick_x:+d},{state.stick_y:+d}) lateral={lateral} phase={phase}",
+                flush=True,
+            )
+            saved += 1
+            if saved >= args.capture_count:
+                break
+    print(f"Saved {saved} frame(s) to {out_dir}", flush=True)
     return 0
 
 
@@ -224,12 +295,14 @@ def _build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--port", help="serial port to the Pi Pico")
     p_run.add_argument("--no-serial", action="store_true", help="use NullLink (no Pico)")
     p_run.add_argument("--debug", action="store_true", help="print confidence/steering/phase every 10 frames")
+    p_run.add_argument("--device", type=int, default=None, metavar="N", help="V4L2 video device index (default: 1)")
     p_run.set_defaults(func=_cmd_run)
 
     p_preview = sub.add_parser("preview", help="show the CV overlay for tuning (no output)")
     _add_source_args(p_preview)
     _add_player_args(p_preview)
     _add_steerer_arg(p_preview)
+    p_preview.add_argument("--device", type=int, default=None, metavar="N", help="V4L2 video device index (default: 1)")
     p_preview.add_argument(
         "--stream",
         action="store_true",
@@ -253,6 +326,24 @@ def _build_parser() -> argparse.ArgumentParser:
         "--debug",
         action="store_true",
         help="show 2x2 mosaic of preprocessing steps (brightness steerer only)",
+    )
+    p_preview.add_argument(
+        "--capture-frames",
+        type=int,
+        metavar="N",
+        help="headless: process and save every Nth frame as a PNG (no window/stream), then exit",
+    )
+    p_preview.add_argument(
+        "--capture-count",
+        type=int,
+        default=12,
+        metavar="K",
+        help="stop after saving K frames in --capture-frames mode (default: 12)",
+    )
+    p_preview.add_argument(
+        "--capture-dir",
+        metavar="DIR",
+        help="output directory for --capture-frames (default: a fresh temp dir)",
     )
     p_preview.set_defaults(func=_cmd_preview)
     return parser
