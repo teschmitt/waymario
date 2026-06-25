@@ -22,22 +22,23 @@ uv run ruff check        # don't bother with linting. It fails and doesn't matte
 
 Running the bot:
 
+The Pico is owned by the **daemon**; `run` and `keyboard` are TCP clients that
+connect to it (so they can run off-Pi and coexist — last-writer-wins).
+
 ```sh
-# Live: Pi + Pico + console wired up
-uv run waymario run --port /dev/ttyACM0
+# Live: start the daemon on the Pi (owns the Pico), then drive through it.
+uv run waymario daemon --port /dev/ttyACM0          # binds 0.0.0.0:9999, logs both directions
+uv run waymario run --daemon <pi-ip>:9999           # the brain, as a client
+uv run waymario keyboard --daemon <pi-ip>:9999      # manual control, as a client
 
-# Dry run on a recording, no Pico
-uv run waymario run --video clips/rainbow_road.mp4 --loop --no-serial
+# Dry run on a recording, no Pico: point run at a --no-serial daemon.
+uv run waymario daemon --no-serial &                # network path only, no hardware
+uv run waymario run --video clips/rainbow_road.mp4 --loop --daemon 127.0.0.1:9999
 
-# Tune vision with a debug overlay (q to quit); --stream serves MJPEG instead of a window
+# Tune vision with a debug overlay (q to quit); --stream serves MJPEG instead of a window.
+# preview sends NO controller output -- it's vision-only, so it has no --daemon.
 uv run waymario preview --video clips/rainbow_road.mp4 --loop --debug
 uv run waymario preview --video clips/rainbow_road.mp4 --loop --stream  # http://<ip>:8080/
-
-# Controller daemon: own the Pico, expose it over TCP (0.0.0.0:9999), log both directions
-uv run waymario daemon --port /dev/ttyACM0
-uv run waymario daemon --no-serial          # network path only, no Pico, for testing
-# Manual control connects to the daemon (the reference TCP client):
-uv run waymario keyboard --daemon <pi-ip>:9999
 ```
 
 Multiplayer: `--players N` (1-4) sets the split-screen layout, `--player N` picks which
@@ -102,9 +103,10 @@ HDMI capture → [capture] → frame
   doesn't keep its last command.
 - **`stream.py`** — `MJPEGServer`, a threaded MJPEG-over-HTTP broadcaster for watching
   the `preview` overlay headlessly (e.g. over SSH).
-- **`cli.py`** — argparse front end; `_build_source`/`_build_link` select real vs
-  stand-in implementations from the flags. Subcommands: `run`, `preview`, `daemon`,
-  and `keyboard` (a manual-control client that connects to the daemon over TCP).
+- **`cli.py`** — argparse front end; `_build_source` selects capture vs video, and
+  `_connect_daemon` builds the `TcpLink` for the daemon clients. Subcommands:
+  `daemon` (owns the Pico), `run` and `keyboard` (both connect to the daemon over
+  TCP via `--daemon HOST:PORT`), and `preview` (vision-only, sends nothing).
 
 ## Pi ↔ Pico contract
 

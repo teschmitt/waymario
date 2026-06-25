@@ -60,7 +60,8 @@ relays this **same line protocol over TCP** so you can drive from any machine:
 
 ```
 waymario daemon --port /dev/ttyACM0      # binds 0.0.0.0:9999 by default
-waymario keyboard --daemon <pi-ip>:9999  # reference client
+waymario run --daemon <pi-ip>:9999       # the autonomous brain, as a client
+waymario keyboard --daemon <pi-ip>:9999  # manual control, as a client
 ```
 
 Any number of clients connect; each sends the identical `<buttons>,<stick_x>,<stick_y>`

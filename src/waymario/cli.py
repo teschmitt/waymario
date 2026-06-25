@@ -11,7 +11,7 @@ from .control import Button, ControllerState, drive_policy
 from .drive import run
 from .steering import build_steerer
 from .stuck import StuckDetector
-from .transport import ControllerLink, NullLink, SerialLink, TcpLink
+from .transport import NullLink, SerialLink, TcpLink
 
 # Button chips drawn in the preview HUD, in controller-ish order. Each lights up
 # when the corresponding bit is set in the controller state.
@@ -49,10 +49,16 @@ def _build_source(args: argparse.Namespace, config: Config) -> FrameSource:
     return CaptureDeviceSource(config.device, config.width, config.height)
 
 
-def _build_link(args: argparse.Namespace, config: Config) -> ControllerLink:
-    if args.no_serial:
-        return NullLink()
-    return SerialLink(config.serial_port, config.baud)
+def _connect_daemon(
+    daemon_arg: str, config: Config, *, on_line=None
+) -> TcpLink | None:
+    """Connect a TcpLink to the daemon, or print an error and return None."""
+    host, port = _parse_host_port(daemon_arg, config.daemon_port)
+    try:
+        return TcpLink(host, port, on_line=on_line)
+    except (ConnectionError, OSError) as exc:
+        print(f"error: couldn't reach daemon at {host}:{port}: {exc}", file=sys.stderr)
+        return None
 
 
 def _apply_player_args(args: argparse.Namespace, config: Config) -> None:
@@ -63,13 +69,14 @@ def _apply_player_args(args: argparse.Namespace, config: Config) -> None:
 
 def _cmd_run(args: argparse.Namespace) -> int:
     config = Config()
-    if args.port:
-        config.serial_port = args.port
     config.steerer = args.steerer
     if args.device is not None:
         config.device = args.device
     _apply_player_args(args, config)
-    with _build_source(args, config) as source, _build_link(args, config) as link:
+    link = _connect_daemon(args.daemon, config)
+    if link is None:
+        return 1
+    with link, _build_source(args, config) as source:
         run(source, build_steerer(config), link, config, debug=args.debug)
     return 0
 
@@ -87,16 +94,15 @@ def _cmd_keyboard(args: argparse.Namespace) -> int:
     from .keyboard import LatestLine, run_keyboard
 
     config = Config()
-    host, port = _parse_host_port(args.daemon, config.daemon_port)
     # Capture the daemon's broadcasts into the status line instead of letting them
     # scroll past the controls.
     latest = LatestLine()
-    try:
-        with TcpLink(host, port, on_line=latest.set) as link:
-            run_keyboard(link, config, status=latest.get)
-    except (ConnectionError, OSError) as exc:
-        print(f"error: couldn't reach daemon at {host}:{port}: {exc}", file=sys.stderr)
+    link = _connect_daemon(args.daemon, config, on_line=latest.set)
+    if link is None:
         return 1
+    try:
+        with link:
+            run_keyboard(link, config, status=latest.get)
     except RuntimeError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -341,12 +347,16 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="waymario", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p_run = sub.add_parser("run", help="drive live: capture -> steer -> controller")
+    p_run = sub.add_parser("run", help="drive live: capture -> steer -> controller (via the daemon)")
     _add_source_args(p_run)
     _add_player_args(p_run)
     _add_steerer_arg(p_run)
-    p_run.add_argument("--port", help="serial port to the Pi Pico")
-    p_run.add_argument("--no-serial", action="store_true", help="use NullLink (no Pico)")
+    p_run.add_argument(
+        "--daemon",
+        default="127.0.0.1",
+        metavar="HOST[:PORT]",
+        help="address of the controller daemon to send frames to (default: 127.0.0.1:9999)",
+    )
     p_run.add_argument("--debug", action="store_true", help="print confidence/steering/phase every 10 frames")
     p_run.add_argument("--device", type=int, default=None, metavar="N", help="V4L2 video device index (default: 1)")
     p_run.set_defaults(func=_cmd_run)
