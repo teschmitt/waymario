@@ -83,6 +83,7 @@ def test_low_confidence_streak_triggers_recovery() -> None:
     assert det.is_recovering
     assert result is not None
     assert result.stick_y < 0  # reversing via stick-Y
+    assert Button.A in result.buttons  # gas stays held to reverse
     assert Button.B not in result.buttons  # no reverse button on the N64 pad
 
 
@@ -100,6 +101,7 @@ def test_static_frame_triggers_recovery() -> None:
     assert det.is_recovering
     assert result is not None
     assert result.stick_y < 0  # reversing via stick-Y
+    assert Button.A in result.buttons  # gas stays held to reverse
     assert Button.B not in result.buttons  # no reverse button on the N64 pad
 
 
@@ -123,8 +125,9 @@ def test_recovery_sequence_completes() -> None:
         assert state is not None
         states.append(state)
 
-    # recovery backs up with the analog stick and never presses B
+    # recovery backs up with A held + the analog stick, and never presses B
     assert all(s.stick_y < 0 for s in states)
+    assert all(Button.A in s.buttons for s in states)
     assert all(Button.B not in s.buttons for s in states)
     # REVERSE phase: straight back (no turn); TURN phase: backing up while steering
     assert any(s.stick_x == 0 for s in states)  # REVERSE
