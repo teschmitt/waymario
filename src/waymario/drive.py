@@ -9,7 +9,7 @@ import numpy as np
 
 from .capture import FrameSource
 from .config import Config
-from .control import ControllerState, drive_policy
+from .control import Button, ControllerState, drive_policy
 from .steering import SteeringDecision, Steerer
 from .stuck import StuckDetector
 from .transport import ControllerLink
@@ -35,6 +35,7 @@ def run(
     frame_period = 1.0 / config.target_fps if config.target_fps > 0 else 0.0
     stuck = StuckDetector(config)
     frame_no = 0
+    last_z_time = time.monotonic()
     try:
         for frame in source.frames():
             start = time.monotonic()
@@ -43,9 +44,15 @@ def run(
             decision = steerer.decide(frame)
             # Let the stuck detector override the normal policy if recovering.
             recovery = stuck.update(frame, decision)
-            decision.steering = decision.steering * 80
+            decision.steering = decision.steering
             
             state = recovery if recovery is not None else drive_policy(decision, config)
+
+            # Press Z every 2 seconds (combined with whatever buttons are active).
+            if start - last_z_time >= 2.0:
+                state.buttons |= Button.Z
+                last_z_time = start
+
             link.send(state)
 
             if on_frame is not None:
