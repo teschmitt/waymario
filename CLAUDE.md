@@ -97,6 +97,10 @@ HDMI capture → [capture] → frame
 ## Pi ↔ Pico contract
 
 `firmware/` holds only the **protocol contract** — the PIO/joybus firmware is future
-work. The wire frame is `[0xA5][btn_hi][btn_lo][stick_x][stick_y][xor]` (xor of the 4
-payload bytes), default 115200 baud. `waymario.transport.encode()` is the reference
-encoder; keep it and `firmware/README.md` in sync if the frame changes.
+work. Pi → Pico is an **ASCII line protocol**: `<buttons>,<stick_x>,<stick_y>\n`
+(buttons `a b z r l s`, sticks `-80..+80`, `,0,0` = neutral), default 115200 baud.
+The Pico holds the last state until a new line arrives, and prints status/`dbg:`
+lines back — `SerialLink` echoes those as `[pico] …`. `waymario.transport.encode()`
+is the reference encoder; keep it and `firmware/README.md` in sync if the frame
+changes. (Separately, Pico → N64 is the joybus status word; its bit layout matches
+`control.Button` and `ControllerState.to_n64_bytes()`.)

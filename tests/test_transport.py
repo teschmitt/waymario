@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import queue
+import time
+
 from waymario.control import Button, ControllerState
-from waymario.transport import NullLink, encode
+from waymario.transport import NullLink, SerialLink, encode
 
 
 def test_encode_is_newline_terminated() -> None:
@@ -48,3 +51,57 @@ def test_null_link_records_last_frame() -> None:
     assert link.count == 2
     assert link.last_state == ControllerState()
     assert link.last_frame == encode(ControllerState())
+
+
+class FakeSerial:
+    """Stand-in for pyserial's Serial: records writes, replays queued read lines."""
+
+    def __init__(self, lines: list[bytes] | None = None) -> None:
+        self.writes: list[bytes] = []
+        self.closed = False
+        self._lines: "queue.Queue[bytes]" = queue.Queue()
+        for line in lines or []:
+            self._lines.put(line)
+
+    def write(self, data: bytes) -> None:
+        self.writes.append(data)
+
+    def readline(self) -> bytes:
+        # Mimic a timeout: return b"" when nothing is queued instead of blocking.
+        try:
+            return self._lines.get_nowait()
+        except queue.Empty:
+            return b""
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_serial_link_writes_encoded_frame() -> None:
+    fake = FakeSerial()
+    link = SerialLink("ignored", echo=False, serial_obj=fake)
+    link.send(ControllerState(stick_x=80, buttons=Button.A))
+    link.close()
+    assert fake.writes == [encode(ControllerState(stick_x=80, buttons=Button.A))]
+    assert fake.closed
+
+
+def test_serial_link_echoes_pico_output(capsys) -> None:
+    fake = FakeSerial(lines=[b"N64 serial controller ready.\n", b"dbg: joybus_enable\r\n"])
+    link = SerialLink("ignored", serial_obj=fake)
+    # Give the reader thread a moment to drain the queued lines.
+    deadline = time.monotonic() + 2.0
+    while fake._lines.qsize() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    link.close()
+    out = capsys.readouterr().out
+    assert "[pico] N64 serial controller ready." in out
+    assert "[pico] dbg: joybus_enable" in out
+
+
+def test_serial_link_close_stops_reader() -> None:
+    fake = FakeSerial()
+    link = SerialLink("ignored", serial_obj=fake)
+    link.close()  # must not hang
+    assert fake.closed
+    assert link._reader is not None and not link._reader.is_alive()

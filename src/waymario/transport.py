@@ -18,10 +18,16 @@ Examples::
     ar,80,0     # A + R, full right
     ,0,0        # no buttons, stick centred (neutral)
     b,0,-80     # B only, full reverse
+
+The Pico **holds the last state** until a new line arrives, and it talks back: a
+boot banner, a syntax help block, and ``dbg:``/``Ready.`` lines. ``SerialLink``
+runs a background reader that prints everything the Pico sends as ``[pico] ...``.
 """
 
 from __future__ import annotations
 
+import sys
+import threading
 from abc import ABC, abstractmethod
 
 from .control import Button, ControllerState
@@ -60,17 +66,57 @@ class ControllerLink(ABC):
 
 
 class SerialLink(ControllerLink):
-    """Send controller frames to the Pi Pico over serial."""
+    """Send controller frames to the Pi Pico over serial.
 
-    def __init__(self, port: str, baud: int = 115200) -> None:
-        import serial  # local import so the brain runs without pyserial present
+    Also reads back everything the Pico prints (boot banner, ``dbg:`` lines, …)
+    on a background thread and echoes it to stdout as ``[pico] …``.
+    """
 
-        self._serial = serial.Serial(port, baud, timeout=0)
+    def __init__(
+        self,
+        port: str,
+        baud: int = 115200,
+        *,
+        echo: bool = True,
+        serial_obj: object | None = None,
+    ) -> None:
+        if serial_obj is not None:
+            # Injected (tests / a pre-opened port): skip the pyserial dependency.
+            self._serial = serial_obj
+        else:
+            import serial  # local import so the brain runs without pyserial present
+
+            # Small read timeout so the reader's readline() blocks briefly rather
+            # than busy-spinning; writes are unaffected.
+            self._serial = serial.Serial(port, baud, timeout=0.1)
+
+        self._stop = threading.Event()
+        self._reader: threading.Thread | None = None
+        if echo:
+            self._reader = threading.Thread(
+                target=self._read_loop, name="pico-reader", daemon=True
+            )
+            self._reader.start()
+
+    def _read_loop(self) -> None:
+        """Print every line the Pico sends until close() sets the stop flag."""
+        while not self._stop.is_set():
+            try:
+                line = self._serial.readline()
+            except Exception:  # port closed out from under us, etc.
+                break
+            if line:
+                text = line.decode("utf-8", errors="replace").rstrip("\r\n")
+                sys.stdout.write(f"[pico] {text}\n")
+                sys.stdout.flush()
 
     def send(self, state: ControllerState) -> None:
         self._serial.write(encode(state))
 
     def close(self) -> None:
+        self._stop.set()
+        if self._reader is not None:
+            self._reader.join(timeout=1.0)
         self._serial.close()
 
 

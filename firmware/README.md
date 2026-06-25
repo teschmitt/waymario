@@ -12,32 +12,52 @@ CPython on stock Raspberry Pi OS (non-realtime, GC pauses) cannot meet that. The
 Pico's PIO state machines can, so the Pi sends *intent* (button + stick state)
 and the Pico handles the wire timing.
 
+There are **two links**, do not confuse them:
+
+- **Pi → Pico** — an ASCII text line protocol (below). This is what `waymario`
+  emits over serial.
+- **Pico → N64** — the joybus status word on the controller port. Its bit layout
+  matches `waymario.control.Button`, and `ControllerState.to_n64_bytes()` is the
+  canonical 4-byte status word the Pico fills in for each poll.
+
 ## Serial wire protocol (Pi → Pico)
 
-Fixed **6-byte frame**, little ceremony, easy to parse on the MCU:
+ASCII, **one newline-terminated line per controller state**:
 
-| Offset | Byte       | Meaning                                            |
-|--------|------------|----------------------------------------------------|
-| 0      | `0xA5`     | frame header / resync marker                       |
-| 1      | `btn_hi`   | N64 status byte 0 (A, B, Z, Start, D-pad)          |
-| 2      | `btn_lo`   | N64 status byte 1 (L, R, C-buttons)                |
-| 3      | `stick_x`  | analog X, signed int8 (two's complement)           |
-| 4      | `stick_y`  | analog Y, signed int8 (two's complement)           |
-| 5      | `xor`      | XOR of bytes 1–4 (checksum)                         |
+```
+<buttons>,<stick_x>,<stick_y>\n
+```
+
+| Field      | Meaning                                                          |
+|------------|------------------------------------------------------------------|
+| `buttons`  | any combination of `a`=A `b`=B `z`=Z `r`=R `l`=L `s`=Start (empty = none) |
+| `stick_x`  | `-80..+80`  (negative = left,  positive = right)                 |
+| `stick_y`  | `-80..+80`  (negative = down,  positive = up)                    |
+
+Examples:
+
+```
+a,0,0       # A pressed, stick centred
+ar,80,0     # A + R, full right
+az,0,0      # A + Z
+,0,0        # no buttons, stick centred (neutral)
+b,0,-80     # B only, full reverse
+```
 
 - Default baud: **115200**.
-- `btn_hi`/`btn_lo` map **directly** onto the joybus poll response button bytes,
-  so the Pico can forward them with no remapping. Bit layout matches
-  `waymario.control.Button`.
-- Bytes 1–4 are exactly the 4 canonical N64 status bytes produced by
-  `ControllerState.to_n64_bytes()`.
+- The Pico **holds the last state** until a new line arrives — resend on change is
+  enough, though `waymario` currently sends every frame.
+- The Pico talks back: a boot banner, a syntax help block, and `dbg:`/`Ready.`
+  status lines. `waymario.transport.SerialLink` reads these on a background thread
+  and prints them as `[pico] …`.
 
 Reference encoder: `waymario.transport.encode()`.
 
 ## Pico responsibilities (to implement)
 
-1. Read 6-byte frames over USB CDC / UART; resync on `0xA5`; verify `xor`.
+1. Read newline-terminated ASCII frames over USB CDC / UART; parse buttons + sticks.
 2. Hold the latest valid state.
 3. On each joybus poll from the console, emit the standard 0x01 (status) and
-   0x00/0xFF (identify) responses, filling the 4 data bytes from the held state.
-4. Fail safe to neutral (all zero) if no valid frame arrives within a timeout.
+   0x00/0xFF (identify) responses, filling the 4 data bytes from the held state
+   (the `ControllerState.to_n64_bytes()` layout).
+4. Fail safe to neutral (`,0,0`) if no valid frame arrives within a timeout.
