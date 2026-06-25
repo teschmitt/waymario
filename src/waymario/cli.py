@@ -94,7 +94,7 @@ def _cmd_preview(args: argparse.Namespace) -> int:
             cx = x0 + int((decision.centroid_x + 1) / 2 * sub_w)
             cv2.line(frame, (cx, top), (cx, bottom), (0, 0, 255), 2)
         _hud(frame, decision, state, phase)
-        return frame
+        return frame, decision, state, phase
 
     def _debug_mosaic(frame: "cv2.typing.MatLike") -> "cv2.typing.MatLike":
         """Build a 2x2 mosaic of the player's subframe showing every preprocessing step."""
@@ -151,9 +151,12 @@ def _cmd_preview(args: argparse.Namespace) -> int:
         # Stack into 2x2 grid
         top_row = np.hstack([p1, p2])
         bot_row = np.hstack([p3, p4])
-        return np.vstack([top_row, bot_row])
+        return np.vstack([top_row, bot_row]), decision, state, phase
 
     process = _debug_mosaic if args.debug else _process_frame
+
+    if args.capture_frames:
+        return _capture(args, source_builder=lambda: _build_source(args, config), process=process)
 
     import time
     frame_period = 1.0 / args.stream_fps
@@ -162,7 +165,7 @@ def _cmd_preview(args: argparse.Namespace) -> int:
         with _build_source(args, config) as source, MJPEGServer(port=args.stream_port) as server:
             for frame in source.frames():
                 t0 = time.monotonic()
-                server.push(process(frame))
+                server.push(process(frame)[0])
                 elapsed = time.monotonic() - t0
                 if elapsed < frame_period:
                     time.sleep(frame_period - elapsed)
@@ -170,13 +173,46 @@ def _cmd_preview(args: argparse.Namespace) -> int:
         with _build_source(args, config) as source:
             for frame in source.frames():
                 t0 = time.monotonic()
-                cv2.imshow("waymario preview", process(frame))
+                cv2.imshow("waymario preview", process(frame)[0])
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     break
                 elapsed = time.monotonic() - t0
                 if elapsed < frame_period:
                     time.sleep(frame_period - elapsed)
         cv2.destroyAllWindows()
+    return 0
+
+
+def _capture(args: argparse.Namespace, source_builder, process) -> int:
+    """Headless: process and save every Nth frame to a directory, with a metadata line
+    per saved frame so a reader can pick which PNGs to open. No window, no stream."""
+    import os
+    import tempfile
+
+    import cv2
+
+    out_dir = args.capture_dir or tempfile.mkdtemp(prefix="waymario-capture-")
+    os.makedirs(out_dir, exist_ok=True)
+    print(f"Capture dir: {out_dir}", flush=True)
+
+    saved = 0
+    with source_builder() as source:
+        for i, frame in enumerate(source.frames()):
+            if i % args.capture_frames:
+                continue
+            img, decision, state, phase = process(frame)
+            name = f"frame_{i:06d}.png"
+            cv2.imwrite(os.path.join(out_dir, name), img)
+            centroid = "none" if decision.centroid_x is None else f"{decision.centroid_x:+.3f}"
+            print(
+                f"{name}  conf={decision.confidence:.3f} steer={decision.steering:+.2f} "
+                f"stick=({state.stick_x:+d},{state.stick_y:+d}) centroid={centroid} phase={phase}",
+                flush=True,
+            )
+            saved += 1
+            if saved >= args.capture_count:
+                break
+    print(f"Saved {saved} frame(s) to {out_dir}", flush=True)
     return 0
 
 
@@ -241,6 +277,24 @@ def main() -> int:
         "--debug",
         action="store_true",
         help="show 2x2 mosaic of preprocessing steps (original / ROI / grayscale / threshold)",
+    )
+    p_preview.add_argument(
+        "--capture-frames",
+        type=int,
+        metavar="N",
+        help="headless: process and save every Nth frame as a PNG (no window/stream), then exit",
+    )
+    p_preview.add_argument(
+        "--capture-count",
+        type=int,
+        default=12,
+        metavar="K",
+        help="stop after saving K frames in --capture-frames mode (default: 12)",
+    )
+    p_preview.add_argument(
+        "--capture-dir",
+        metavar="DIR",
+        help="output directory for --capture-frames (default: a fresh temp dir)",
     )
     p_preview.set_defaults(func=_cmd_preview)
 
