@@ -82,7 +82,9 @@ def test_low_confidence_streak_triggers_recovery() -> None:
         result = det.update(f, _bad_decision())
     assert det.is_recovering
     assert result is not None
-    assert Button.B in result.buttons
+    assert result.stick_y < 0  # reversing via stick-Y
+    assert Button.A in result.buttons  # gas stays held to reverse
+    assert Button.B not in result.buttons  # no reverse button on the N64 pad
 
 
 # ---------------------------------------------------------------------------
@@ -98,7 +100,9 @@ def test_static_frame_triggers_recovery() -> None:
         result = det.update(frame, _good_decision())
     assert det.is_recovering
     assert result is not None
-    assert Button.B in result.buttons
+    assert result.stick_y < 0  # reversing via stick-Y
+    assert Button.A in result.buttons  # gas stays held to reverse
+    assert Button.B not in result.buttons  # no reverse button on the N64 pad
 
 
 # ---------------------------------------------------------------------------
@@ -111,23 +115,23 @@ def test_recovery_sequence_completes() -> None:
     frame = _black_frame()
 
     # trigger recovery
-    for _ in range(cfg.stuck_frames + 1):
+    while not det.is_recovering:
         det.update(frame, _bad_decision())
-    assert det.is_recovering
 
-    # burn through REVERSE phase
-    for _ in range(cfg.recovery_reverse_frames):
+    # collect every recovery frame until we're back to normal driving
+    states = []
+    while det.is_recovering:
         state = det.update(frame, _bad_decision())
         assert state is not None
-        assert Button.B in state.buttons
-        assert state.stick_y < 0  # reversing
+        states.append(state)
 
-    # burn through TURN phase
-    for _ in range(cfg.recovery_turn_frames):
-        state = det.update(frame, _bad_decision())
-        assert state is not None
-        assert Button.B in state.buttons
-        assert state.stick_x != 0  # turning
+    # recovery backs up with A held + the analog stick, and never presses B
+    assert all(s.stick_y < 0 for s in states)
+    assert all(Button.A in s.buttons for s in states)
+    assert all(Button.B not in s.buttons for s in states)
+    # REVERSE phase: straight back (no turn); TURN phase: backing up while steering
+    assert any(s.stick_x == 0 for s in states)  # REVERSE
+    assert any(s.stick_x != 0 for s in states)  # TURN
 
     # should be back to normal
     assert not det.is_recovering
@@ -139,17 +143,17 @@ def test_turn_direction_alternates() -> None:
     frame = _black_frame()
 
     def _trigger_and_get_turn_dir() -> int:
-        for _ in range(cfg.stuck_frames + 1):
+        # drive until recovery kicks in (starts in the straight-back REVERSE phase)
+        while not det.is_recovering:
             det.update(frame, _bad_decision())
-        # skip reverse phase
-        for _ in range(cfg.recovery_reverse_frames):
-            det.update(frame, _bad_decision())
-        # first turn frame
+        # advance into the TURN phase, where stick_x carries the direction
         state = det.update(frame, _bad_decision())
+        while state is not None and state.stick_x == 0:
+            state = det.update(frame, _bad_decision())
         assert state is not None
         direction = 1 if state.stick_x > 0 else -1
-        # finish recovery
-        for _ in range(cfg.recovery_turn_frames):
+        # finish recovery so the next call starts a fresh one
+        while det.is_recovering:
             det.update(frame, _bad_decision())
         return direction
 

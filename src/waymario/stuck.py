@@ -13,12 +13,14 @@
 
 Either condition triggers a *recovery sequence*:
 
-    Phase 1 — REVERSE:  hold B + reverse stick-Y for ``recovery_reverse_frames``
-    Phase 2 — TURN:     hold B + full stick-X for ``recovery_turn_frames``
+    Phase 1 — REVERSE:  hold A + stick-Y down for ``recovery_reverse_frames``
+    Phase 2 — TURN:     keep backing up + full stick-X for ``recovery_turn_frames``
     Phase 3 — RESUME:   hand back to normal drive_policy
 
-The turn direction alternates each recovery so the bot doesn't spin forever
-on the same side.
+Mario Kart 64 has no reverse button — backing up is done by holding A (the
+gas must stay pressed) and pulling the analog stick full down, so recovery
+never touches B.  The turn direction alternates each recovery so the bot
+doesn't spin forever on the same side.
 """
 
 from __future__ import annotations
@@ -91,11 +93,10 @@ class StuckDetector:
             return None  # normal driving
 
         if self._phase is _Phase.REVERSE:
-            state = ControllerState(
-                stick_x=0,
-                stick_y=-cfg.max_stick,
-                buttons=Button.B,
-            )
+            # No reverse button on the N64 pad — back up by holding A (the
+            # gas, which must stay pressed to reverse) plus the analog stick
+            # straight down.
+            state = ControllerState(stick_x=0, stick_y=-cfg.max_stick, buttons=Button.A)
             self._phase_frames += 1
             if self._phase_frames > cfg.recovery_reverse_frames:
                 self._phase = _Phase.TURN
@@ -103,10 +104,12 @@ class StuckDetector:
             return state
 
         if self._phase is _Phase.TURN:
+            # Keep reversing (A + stick-Y down) while steering hard to one side
+            # so the kart backs away from the wall at an angle.
             state = ControllerState(
                 stick_x=self._turn_direction * cfg.max_stick,
                 stick_y=-cfg.max_stick,
-                buttons=Button.B,
+                buttons=Button.A,
             )
             self._phase_frames += 1
             if self._phase_frames > cfg.recovery_turn_frames:

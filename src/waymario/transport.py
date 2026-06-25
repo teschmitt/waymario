@@ -17,7 +17,7 @@ Examples::
     a,0,0       # A pressed, stick centred
     ar,80,0     # A + R, full right
     ,0,0        # no buttons, stick centred (neutral)
-    b,0,-80     # B only, full reverse
+    ,0,-80      # no buttons, full reverse (MK64 reverses with the stick, not B)
 
 The Pico **holds the last state** until a new line arrives, and it talks back: a
 boot banner, a syntax help block, and ``dbg:``/``Ready.`` lines. ``SerialLink``
