@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 
 from waymario.config import Config
+from waymario.control import Button
 from waymario.steering import SteeringDecision
 from waymario.stuck import StuckDetector
 
@@ -14,6 +15,7 @@ def _config(**kwargs) -> Config:
     defaults = dict(
         stuck_frames=5,
         stuck_frame_diff_threshold=2.0,
+        recovery_reverse_frames=4,
         recovery_turn_frames=3,
         max_stick=80,
     )
@@ -80,7 +82,8 @@ def test_low_confidence_streak_triggers_recovery() -> None:
         result = det.update(f, _bad_decision())
     assert det.is_recovering
     assert result is not None
-    assert result.stick_x != 0  # turning out of the wall
+    assert result.stick_y < 0  # reversing via stick-Y
+    assert Button.B not in result.buttons  # no reverse button on the N64 pad
 
 
 # ---------------------------------------------------------------------------
@@ -96,11 +99,12 @@ def test_static_frame_triggers_recovery() -> None:
         result = det.update(frame, _good_decision())
     assert det.is_recovering
     assert result is not None
-    assert result.stick_x != 0  # turning out of the wall
+    assert result.stick_y < 0  # reversing via stick-Y
+    assert Button.B not in result.buttons  # no reverse button on the N64 pad
 
 
 # ---------------------------------------------------------------------------
-# Recovery sequence: TURN → NORMAL
+# Recovery sequence: REVERSE → TURN → NORMAL
 # ---------------------------------------------------------------------------
 
 def test_recovery_sequence_completes() -> None:
@@ -112,11 +116,19 @@ def test_recovery_sequence_completes() -> None:
     while not det.is_recovering:
         det.update(frame, _bad_decision())
 
-    # burn through the TURN phase — every recovery frame steers
+    # collect every recovery frame until we're back to normal driving
+    states = []
     while det.is_recovering:
         state = det.update(frame, _bad_decision())
         assert state is not None
-        assert state.stick_x != 0  # turning
+        states.append(state)
+
+    # recovery backs up with the analog stick and never presses B
+    assert all(s.stick_y < 0 for s in states)
+    assert all(Button.B not in s.buttons for s in states)
+    # REVERSE phase: straight back (no turn); TURN phase: backing up while steering
+    assert any(s.stick_x == 0 for s in states)  # REVERSE
+    assert any(s.stick_x != 0 for s in states)  # TURN
 
     # should be back to normal
     assert not det.is_recovering
@@ -128,9 +140,12 @@ def test_turn_direction_alternates() -> None:
     frame = _black_frame()
 
     def _trigger_and_get_turn_dir() -> int:
-        # drive until recovery kicks in; that frame holds the turn direction
-        state = None
+        # drive until recovery kicks in (starts in the straight-back REVERSE phase)
         while not det.is_recovering:
+            det.update(frame, _bad_decision())
+        # advance into the TURN phase, where stick_x carries the direction
+        state = det.update(frame, _bad_decision())
+        while state is not None and state.stick_x == 0:
             state = det.update(frame, _bad_decision())
         assert state is not None
         direction = 1 if state.stick_x > 0 else -1

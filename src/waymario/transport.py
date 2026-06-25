@@ -17,7 +17,7 @@ Examples::
     a,0,0       # A pressed, stick centred
     ar,80,0     # A + R, full right
     ,0,0        # no buttons, stick centred (neutral)
-    b,0,-80     # B only, full reverse
+    ,0,-80      # no buttons, full reverse (MK64 reverses with the stick, not B)
 """
 
 from __future__ import annotations

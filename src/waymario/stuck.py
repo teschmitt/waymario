@@ -13,11 +13,14 @@
 
 Either condition triggers a *recovery sequence*:
 
-    Phase 1 — TURN:     full stick-X for ``recovery_turn_frames``
-    Phase 2 — RESUME:   hand back to normal drive_policy
+    Phase 1 — REVERSE:  back up via stick-Y for ``recovery_reverse_frames``
+    Phase 2 — TURN:     keep backing up + full stick-X for ``recovery_turn_frames``
+    Phase 3 — RESUME:   hand back to normal drive_policy
 
-The turn direction alternates each recovery so the bot doesn't spin forever
-on the same side.
+Mario Kart 64 has no reverse button — backing up is done purely with the
+analog stick (full stick-Y down), so recovery never touches B.  The turn
+direction alternates each recovery so the bot doesn't spin forever on the
+same side.
 """
 
 from __future__ import annotations
@@ -35,6 +38,7 @@ from .steering import SteeringDecision
 
 class _Phase(Enum):
     NORMAL = auto()
+    REVERSE = auto()
     TURN = auto()
 
 
@@ -88,10 +92,22 @@ class StuckDetector:
         if self._phase is _Phase.NORMAL:
             return None  # normal driving
 
+        if self._phase is _Phase.REVERSE:
+            # No reverse button on the N64 pad — back up by holding the
+            # analog stick straight down.
+            state = ControllerState(stick_x=0, stick_y=-cfg.max_stick)
+            self._phase_frames += 1
+            if self._phase_frames > cfg.recovery_reverse_frames:
+                self._phase = _Phase.TURN
+                self._phase_frames = 0
+            return state
+
         if self._phase is _Phase.TURN:
+            # Keep reversing (stick-Y down) while steering hard to one side so
+            # the kart backs away from the wall at an angle.
             state = ControllerState(
                 stick_x=self._turn_direction * cfg.max_stick,
-                stick_y=0,
+                stick_y=-cfg.max_stick,
             )
             self._phase_frames += 1
             if self._phase_frames > cfg.recovery_turn_frames:
@@ -114,7 +130,7 @@ class StuckDetector:
         return frame[int(h * py0):int(h * py1), int(w * px0):int(w * px1)]
 
     def _start_recovery(self) -> None:
-        self._phase = _Phase.TURN
+        self._phase = _Phase.REVERSE
         self._phase_frames = 0
         self._diff_streak = 0
         self._low_conf_streak = 0
