@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import argparse
 
+import cv2
+
 from .capture import CaptureDeviceSource, FrameSource, VideoFileSource
 from .config import Config
-from .control import drive_policy
+from .control import ControllerState, drive_policy
 from .drive import run
-from .steering import OpenCVSteerer
+from .steering import OpenCVSteerer, SteeringDecision
 from .stuck import StuckDetector
 from .transport import ControllerLink, NullLink, SerialLink
 
@@ -31,23 +33,88 @@ def _apply_player_args(args: argparse.Namespace, config: Config) -> None:
     config.player = args.player
 
 
+# ---------------------------------------------------------------------------
+# Shared annotation helpers (used by both `run --stream` and `preview`)
+# ---------------------------------------------------------------------------
+
+def _subframe(frame: cv2.typing.MatLike, config: Config):
+    """Return (subframe, x0, y0) for the player's screen quadrant."""
+    h, w = frame.shape[:2]
+    px0, py0, px1, py1 = config.player_region()
+    x0, y0 = int(w * px0), int(h * py0)
+    x1, y1 = int(w * px1), int(h * py1)
+    return frame[y0:y1, x0:x1], x0, y0
+
+
+def _annotate_frame(
+    frame: cv2.typing.MatLike,
+    decision: SteeringDecision,
+    state: ControllerState,
+    phase: str,
+    config: Config,
+) -> cv2.typing.MatLike:
+    """Draw ROI box, centroid line and HUD onto a copy of *frame*."""
+    frame = frame.copy()
+    sub, x0, y0 = _subframe(frame, config)
+    sub_h, sub_w = sub.shape[:2]
+    top = y0 + int(sub_h * config.roi_top)
+    bottom = y0 + int(sub_h * config.roi_bottom)
+
+    cv2.rectangle(frame, (x0, top), (x0 + sub_w, bottom), (0, 255, 0), 1)
+    if decision.centroid_x is not None:
+        cx = x0 + int((decision.centroid_x + 1) / 2 * sub_w)
+        cv2.line(frame, (cx, top), (cx, bottom), (0, 0, 255), 2)
+
+    bar_color = (0, 0, 180) if phase != "NORMAL" else (0, 80, 0)
+    cv2.rectangle(frame, (x0, y0), (x0 + sub_w, y0 + 36), bar_color, -1)
+    mode_tag = f"[{phase}]" if phase != "NORMAL" else "[DRIVE]"
+    text = (
+        f"P{config.player} {mode_tag}  "
+        f"conf={decision.confidence:.3f}  "
+        f"steer={decision.steering:+.2f}  "
+        f"stick=({state.stick_x:+d},{state.stick_y:+d})"
+    )
+    cv2.putText(frame, text, (x0 + 8, y0 + 26),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+    return frame
+
+
+# ---------------------------------------------------------------------------
+# run command
+# ---------------------------------------------------------------------------
+
 def _cmd_run(args: argparse.Namespace) -> int:
+    from .stream import MJPEGServer
+
     config = Config()
     if args.port:
         config.serial_port = args.port
     if args.device is not None:
         config.device = args.device
     _apply_player_args(args, config)
-    with _build_source(args, config) as source, _build_link(args, config) as link:
-        run(source, OpenCVSteerer(config), link, config, debug=args.debug)
+
+    on_frame = None
+    server: MJPEGServer | None = None
+    if args.stream:
+        server = MJPEGServer(port=args.stream_port)
+        server.start()
+
+        def on_frame(frame, decision, state, phase):  # type: ignore[misc]
+            annotated = _annotate_frame(frame, decision, state, phase, config)
+            server.push(annotated)  # type: ignore[union-attr]
+
+    try:
+        with _build_source(args, config) as source, _build_link(args, config) as link:
+            run(source, OpenCVSteerer(config), link, config, debug=args.debug, on_frame=on_frame)
+    finally:
+        if server is not None:
+            server.stop()
     return 0
 
 
 
 def _cmd_preview(args: argparse.Namespace) -> int:
     """Show the CV overlay (ROI box, centroid, steering) for tuning. No output sent."""
-    import cv2
-
     from .stream import MJPEGServer
 
     config = Config()
@@ -59,55 +126,23 @@ def _cmd_preview(args: argparse.Namespace) -> int:
 
     use_stream = args.stream
 
-    def _subframe(frame: "cv2.typing.MatLike"):
-        """Return (subframe, x0, y0) — the player's screen quadrant and its offset."""
-        h, w = frame.shape[:2]
-        px0, py0, px1, py1 = config.player_region()
-        x0, y0 = int(w * px0), int(h * py0)
-        x1, y1 = int(w * px1), int(h * py1)
-        return frame[y0:y1, x0:x1], x0, y0
-
-    def _hud(frame: "cv2.typing.MatLike", decision, state, phase: str) -> None:
-        """Draw status bar at the top of the player's subframe."""
-        sub, x0, y0 = _subframe(frame)
-        sh, sw = sub.shape[:2]
-        bar_color = (0, 0, 180) if phase != "NORMAL" else (0, 80, 0)
-        cv2.rectangle(frame, (x0, y0), (x0 + sw, y0 + 36), bar_color, -1)
-        mode_tag = f"[{phase}]" if phase != "NORMAL" else "[DRIVE]"
-        text = (
-            f"P{config.player} {mode_tag}  "
-            f"conf={decision.confidence:.3f}  "
-            f"steer={decision.steering:+.2f}  "
-            f"stick=({state.stick_x:+d},{state.stick_y:+d})"
-        )
-        cv2.putText(frame, text, (x0 + 8, y0 + 26),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-
-    def _process_frame(frame: "cv2.typing.MatLike") -> "cv2.typing.MatLike":
+    def _process_frame(frame: cv2.typing.MatLike):
         """Annotate frame with ROI box, centroid line, HUD and stuck state."""
         decision = steerer.decide(frame)
         recovery = stuck.update(frame, decision)
         state = recovery if recovery is not None else drive_policy(decision, config)
         phase = stuck._phase.name
-        sub, x0, y0 = _subframe(frame)
-        sub_h, sub_w = sub.shape[:2]
-        top = y0 + int(sub_h * config.roi_top)
-        bottom = y0 + int(sub_h * config.roi_bottom)
-        cv2.rectangle(frame, (x0, top), (x0 + sub_w, bottom), (0, 255, 0), 1)
-        if decision.centroid_x is not None:
-            cx = x0 + int((decision.centroid_x + 1) / 2 * sub_w)
-            cv2.line(frame, (cx, top), (cx, bottom), (0, 0, 255), 2)
-        _hud(frame, decision, state, phase)
-        return frame, decision, state, phase
+        annotated = _annotate_frame(frame, decision, state, phase, config)
+        return annotated, decision, state, phase
 
-    def _debug_mosaic(frame: "cv2.typing.MatLike") -> "cv2.typing.MatLike":
+    def _debug_mosaic(frame: cv2.typing.MatLike):
         """Build a 2x2 mosaic of the player's subframe showing every preprocessing step."""
         import numpy as np
         decision = steerer.decide(frame)  # run CV once, reuse below
         recovery = stuck.update(frame, decision)
         state = recovery if recovery is not None else drive_policy(decision, config)
         phase = stuck._phase.name
-        sub, _x0, _y0 = _subframe(frame)
+        sub, _x0, _y0 = _subframe(frame, config)
         sub_h, sub_w = sub.shape[:2]
         top = int(sub_h * config.roi_top)
         bottom = int(sub_h * config.roi_bottom)
@@ -254,6 +289,18 @@ def main() -> int:
     p_run.add_argument("--no-serial", action="store_true", help="use NullLink (no Pico)")
     p_run.add_argument("--debug", action="store_true", help="print confidence/steering/phase every 10 frames")
     p_run.add_argument("--device", type=int, default=None, metavar="N", help="V4L2 video device index (default: 1)")
+    p_run.add_argument(
+        "--stream",
+        action="store_true",
+        help="serve a live annotated MJPEG stream while driving (same overlay as 'preview --stream')",
+    )
+    p_run.add_argument(
+        "--stream-port",
+        type=int,
+        default=8080,
+        metavar="PORT",
+        help="port for the MJPEG HTTP server when --stream is set (default: 8080)",
+    )
     p_run.set_defaults(func=_cmd_run)
 
     p_preview = sub.add_parser("preview", help="show the CV overlay for tuning (no output)")
