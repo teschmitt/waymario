@@ -93,6 +93,9 @@ class Config:
     # --- transport ---
     serial_port: str = "/dev/ttyUSB0"
     baud: int = 115200
+    daemon_port: int = 9999
+    """Default TCP port for the controller daemon (``waymario daemon``) and the
+    keyboard client that connects to it."""
 
     # --- stuck detection & recovery ---
     stuck_frames: int = 90

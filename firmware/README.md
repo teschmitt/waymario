@@ -51,7 +51,23 @@ b,0,-80     # B only, full reverse
   status lines. `waymario.transport.SerialLink` reads these on a background thread
   and prints them as `[pico] …`.
 
-Reference encoder: `waymario.transport.encode()`.
+Reference encoder: `waymario.transport.encode()` (decoder: `decode()`).
+
+## Network layer (Pi ↔ clients)
+
+`waymario daemon` runs on the Pi, holds the single serial link to the Pico, and
+relays this **same line protocol over TCP** so you can drive from any machine:
+
+```
+waymario daemon --port /dev/ttyACM0      # binds 0.0.0.0:9999 by default
+waymario keyboard --daemon <pi-ip>:9999  # reference client
+```
+
+Any number of clients connect; each sends the identical `<buttons>,<stick_x>,<stick_y>`
+frames. The daemon forwards them to the Pico (last-writer-wins), **multiplexes the
+Pico's output back to every connected client**, and logs both directions to stderr
+(`[tx …]` for frames it sends to the device, `[rx] …` for what the Pico replies).
+Client link: `waymario.transport.TcpLink`.
 
 ## Pico responsibilities (to implement)
 

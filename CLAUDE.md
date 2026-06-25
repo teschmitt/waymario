@@ -32,6 +32,12 @@ uv run waymario run --video clips/rainbow_road.mp4 --loop --no-serial
 # Tune vision with a debug overlay (q to quit); --stream serves MJPEG instead of a window
 uv run waymario preview --video clips/rainbow_road.mp4 --loop --debug
 uv run waymario preview --video clips/rainbow_road.mp4 --loop --stream  # http://<ip>:8080/
+
+# Controller daemon: own the Pico, expose it over TCP (0.0.0.0:9999), log both directions
+uv run waymario daemon --port /dev/ttyACM0
+uv run waymario daemon --no-serial          # network path only, no Pico, for testing
+# Manual control connects to the daemon (the reference TCP client):
+uv run waymario keyboard --daemon <pi-ip>:9999
 ```
 
 Multiplayer: `--players N` (1-4) sets the split-screen layout, `--player N` picks which
@@ -82,7 +88,12 @@ HDMI capture → [capture] → frame
   status word, so `ControllerState.to_n64_bytes()` serializes directly to the 4 status
   bytes.
 - **`transport.py`** — `ControllerLink.send(state)`. `SerialLink` writes to the Pico;
-  `NullLink` records the last frame for tests. `encode()` builds the 6-byte wire frame.
+  `TcpLink` writes to the daemon over the network; `NullLink` records the last frame
+  for tests. `encode()`/`decode()` are the wire-frame codec.
+- **`daemon.py`** — `ControllerDaemon`, a threaded TCP server (`waymario daemon`) that
+  owns the one serial link to the Pico and relays the same line protocol over the
+  network: client frames → Pico, Pico output → all clients (multiplexed), both
+  directions logged to stderr (`[tx …]`/`[rx]`).
 - **`config.py`** — one flat `Config` dataclass holding every tunable (ROI bounds,
   brightness threshold, steering gain, max stick, baud, fps) plus `_PLAYER_REGIONS`,
   the split-screen quadrant table. New knobs go here, not threaded through calls.
@@ -92,7 +103,8 @@ HDMI capture → [capture] → frame
 - **`stream.py`** — `MJPEGServer`, a threaded MJPEG-over-HTTP broadcaster for watching
   the `preview` overlay headlessly (e.g. over SSH).
 - **`cli.py`** — argparse front end; `_build_source`/`_build_link` select real vs
-  stand-in implementations from the flags.
+  stand-in implementations from the flags. Subcommands: `run`, `preview`, `daemon`,
+  and `keyboard` (a manual-control client that connects to the daemon over TCP).
 
 ## Pi ↔ Pico contract
 

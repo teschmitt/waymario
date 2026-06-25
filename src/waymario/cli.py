@@ -11,7 +11,7 @@ from .control import Button, ControllerState, drive_policy
 from .drive import run
 from .steering import build_steerer
 from .stuck import StuckDetector
-from .transport import ControllerLink, NullLink, SerialLink
+from .transport import ControllerLink, NullLink, SerialLink, TcpLink
 
 # Button chips drawn in the preview HUD, in controller-ish order. Each lights up
 # when the corresponding bit is set in the controller state.
@@ -74,19 +74,52 @@ def _cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def _parse_host_port(value: str, default_port: int) -> tuple[str, int]:
+    """Parse a ``HOST`` or ``HOST:PORT`` string, falling back to ``default_port``."""
+    host, sep, port_str = value.rpartition(":")
+    if not sep:
+        return value, default_port
+    return host, int(port_str)
+
+
 def _cmd_keyboard(args: argparse.Namespace) -> int:
-    """Manually drive the console from the keyboard (no capture, no steering)."""
+    """Manually drive the console from the keyboard, via the controller daemon."""
     from .keyboard import run_keyboard
+
+    config = Config()
+    host, port = _parse_host_port(args.daemon, config.daemon_port)
+    try:
+        with TcpLink(host, port) as link:
+            run_keyboard(link, config)
+    except (ConnectionError, OSError) as exc:
+        print(f"error: couldn't reach daemon at {host}:{port}: {exc}", file=sys.stderr)
+        return 1
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _cmd_daemon(args: argparse.Namespace) -> int:
+    """Run the controller daemon: own the Pico, expose it over TCP."""
+    from .daemon import ControllerDaemon
 
     config = Config()
     if args.port:
         config.serial_port = args.port
+
+    def link_factory(on_line):
+        if args.no_serial:
+            return NullLink()
+        return SerialLink(config.serial_port, config.baud, on_line=on_line)
+
+    daemon = ControllerDaemon(args.host, args.listen_port, link_factory)
     try:
-        with _build_link(args, config) as link:
-            run_keyboard(link, config)
-    except RuntimeError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
+        daemon.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        daemon.shutdown()
     return 0
 
 
@@ -317,15 +350,46 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_keyboard = sub.add_parser(
         "keyboard",
-        help="manually drive from the keyboard for debugging (no capture/steering)",
+        help="manually drive from the keyboard for debugging (connects to the daemon)",
         description=(
-            "Drive the console by hand from the terminal. Keys: arrows or WASD steer "
-            "the stick, space=A, b=B, z=Z, l/r=L/R, enter=Start, q/Ctrl-C to quit."
+            "Drive the console by hand from the terminal, through a running "
+            "'waymario daemon'. Keys: arrows or WASD steer the stick, space=A, b=B, "
+            "z=Z, l/r=L/R, enter=Start, q/Ctrl-C to quit."
         ),
     )
-    p_keyboard.add_argument("--port", help="serial port to the Pi Pico")
-    p_keyboard.add_argument("--no-serial", action="store_true", help="use NullLink (no Pico)")
+    p_keyboard.add_argument(
+        "--daemon",
+        default="127.0.0.1",
+        metavar="HOST[:PORT]",
+        help="address of the controller daemon (default: 127.0.0.1:9999)",
+    )
     p_keyboard.set_defaults(func=_cmd_keyboard)
+
+    p_daemon = sub.add_parser(
+        "daemon",
+        help="run the controller daemon: own the Pico, expose it over TCP",
+        description=(
+            "Hold the serial link to the Pico and relay controller frames from any "
+            "number of TCP clients, multiplexing the Pico's output back to all of "
+            "them. Logs every frame sent and received to stderr."
+        ),
+    )
+    p_daemon.add_argument("--port", help="serial port to the Pi Pico")
+    p_daemon.add_argument("--no-serial", action="store_true", help="use NullLink (no Pico)")
+    p_daemon.add_argument(
+        "--host",
+        default="0.0.0.0",
+        metavar="ADDR",
+        help="address to bind the TCP listener to (default: 0.0.0.0)",
+    )
+    p_daemon.add_argument(
+        "--listen-port",
+        type=int,
+        default=Config.daemon_port,
+        metavar="PORT",
+        help="TCP port to listen on (default: 9999)",
+    )
+    p_daemon.set_defaults(func=_cmd_daemon)
 
     p_preview = sub.add_parser("preview", help="show the CV overlay for tuning (no output)")
     _add_source_args(p_preview)

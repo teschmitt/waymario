@@ -5,8 +5,10 @@ from __future__ import annotations
 import queue
 import time
 
+import pytest
+
 from waymario.control import Button, ControllerState
-from waymario.transport import NullLink, SerialLink, encode
+from waymario.transport import NullLink, SerialLink, decode, encode
 
 
 def test_encode_is_newline_terminated() -> None:
@@ -43,6 +45,30 @@ def test_encode_b_reverse() -> None:
     assert encode(state) == b"b,0,-80\n"
 
 
+@pytest.mark.parametrize(
+    "state",
+    [
+        ControllerState(),
+        ControllerState(buttons=Button.A),
+        ControllerState(stick_x=80, stick_y=-40, buttons=Button.A | Button.R),
+        ControllerState(stick_x=-80, stick_y=80, buttons=Button.B | Button.Z | Button.L | Button.START),
+    ],
+)
+def test_decode_round_trips_encode(state: ControllerState) -> None:
+    assert decode(encode(state)) == state
+
+
+def test_decode_accepts_bytes_and_str() -> None:
+    assert decode(b"a,80,0\n") == ControllerState(stick_x=80, buttons=Button.A)
+    assert decode("a,80,0") == ControllerState(stick_x=80, buttons=Button.A)
+
+
+@pytest.mark.parametrize("line", ["", "a,0", "a,0,0,0", "a,x,0", "q,0,0"])
+def test_decode_rejects_malformed(line: str) -> None:
+    with pytest.raises(ValueError):
+        decode(line)
+
+
 def test_null_link_records_last_frame() -> None:
     link = NullLink()
     state = ControllerState(stick_x=42, buttons=Button.A)
@@ -65,6 +91,10 @@ class FakeSerial:
 
     def write(self, data: bytes) -> None:
         self.writes.append(data)
+
+    def feed_line(self, line: bytes) -> None:
+        """Queue another line for the reader to pick up after construction."""
+        self._lines.put(line)
 
     def readline(self) -> bytes:
         # Mimic a timeout: return b"" when nothing is queued instead of blocking.
