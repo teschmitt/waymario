@@ -117,4 +117,4 @@ class Config:
             raise ValueError(
                 f"Invalid combination: players={self.players}, player={self.player}. "
                 f"Valid players values are 1-4 and player must be within that range."
-            )
+            ) from None
