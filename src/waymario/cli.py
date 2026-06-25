@@ -9,6 +9,7 @@ from .config import Config
 from .control import drive_policy
 from .drive import run
 from .steering import OpenCVSteerer
+from .stuck import StuckDetector
 from .transport import ControllerLink, NullLink, SerialLink
 
 
@@ -36,7 +37,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         config.serial_port = args.port
     _apply_player_args(args, config)
     with _build_source(args, config) as source, _build_link(args, config) as link:
-        run(source, OpenCVSteerer(config), link, config)
+        run(source, OpenCVSteerer(config), link, config, debug=args.debug)
     return 0
 
 
@@ -50,6 +51,7 @@ def _cmd_preview(args: argparse.Namespace) -> int:
     config = Config()
     _apply_player_args(args, config)
     steerer = OpenCVSteerer(config)
+    stuck = StuckDetector(config)
 
     use_stream = args.stream
 
@@ -61,10 +63,28 @@ def _cmd_preview(args: argparse.Namespace) -> int:
         x1, y1 = int(w * px1), int(h * py1)
         return frame[y0:y1, x0:x1], x0, y0
 
+    def _hud(frame: "cv2.typing.MatLike", decision, state, phase: str) -> None:
+        """Draw status bar at the top of the player's subframe."""
+        sub, x0, y0 = _subframe(frame)
+        sh, sw = sub.shape[:2]
+        bar_color = (0, 0, 180) if phase != "NORMAL" else (0, 80, 0)
+        cv2.rectangle(frame, (x0, y0), (x0 + sw, y0 + 36), bar_color, -1)
+        mode_tag = f"[{phase}]" if phase != "NORMAL" else "[DRIVE]"
+        text = (
+            f"P{config.player} {mode_tag}  "
+            f"conf={decision.confidence:.3f}  "
+            f"steer={decision.steering:+.2f}  "
+            f"stick=({state.stick_x:+d},{state.stick_y:+d})"
+        )
+        cv2.putText(frame, text, (x0 + 8, y0 + 26),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+
     def _process_frame(frame: "cv2.typing.MatLike") -> "cv2.typing.MatLike":
-        """Annotate frame with ROI box, centroid line and HUD text."""
+        """Annotate frame with ROI box, centroid line, HUD and stuck state."""
         decision = steerer.decide(frame)
-        state = drive_policy(decision, config)
+        recovery = stuck.update(frame, decision)
+        state = recovery if recovery is not None else drive_policy(decision, config)
+        phase = stuck._phase.name
         sub, x0, y0 = _subframe(frame)
         sub_h, sub_w = sub.shape[:2]
         top = y0 + int(sub_h * config.roi_top)
@@ -73,21 +93,16 @@ def _cmd_preview(args: argparse.Namespace) -> int:
         if decision.centroid_x is not None:
             cx = x0 + int((decision.centroid_x + 1) / 2 * sub_w)
             cv2.line(frame, (cx, top), (cx, bottom), (0, 0, 255), 2)
-        cv2.putText(
-            frame,
-            f"P{config.player} steer={decision.steering:+.2f} conf={decision.confidence:.3f} stick={state.stick_x:+d}",
-            (x0 + 10, y0 + 30),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.7,
-            (255, 255, 255),
-            2,
-        )
+        _hud(frame, decision, state, phase)
         return frame
 
     def _debug_mosaic(frame: "cv2.typing.MatLike") -> "cv2.typing.MatLike":
         """Build a 2x2 mosaic of the player's subframe showing every preprocessing step."""
         import numpy as np
         decision = steerer.decide(frame)  # run CV once, reuse below
+        recovery = stuck.update(frame, decision)
+        state = recovery if recovery is not None else drive_policy(decision, config)
+        phase = stuck._phase.name
         sub, _x0, _y0 = _subframe(frame)
         sub_h, sub_w = sub.shape[:2]
         top = int(sub_h * config.roi_top)
@@ -99,8 +114,11 @@ def _cmd_preview(args: argparse.Namespace) -> int:
         if decision.centroid_x is not None:
             cx = int((decision.centroid_x + 1) / 2 * sub_w)
             cv2.line(p1, (cx, top), (cx, bottom), (0, 0, 255), 2)
-        cv2.putText(p1, f"1: P{config.player} subframe  steer={decision.steering:+.2f}",
-                    (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 0), 2)
+        bar_color = (0, 0, 180) if phase != "NORMAL" else (0, 80, 0)
+        cv2.rectangle(p1, (0, 0), (sub_w, 36), bar_color, -1)
+        cv2.putText(p1,
+                    f"1:[{phase}] conf={decision.confidence:.3f} steer={decision.steering:+.2f} stick=({state.stick_x:+d},{state.stick_y:+d})",
+                    (8, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2)
 
         # Panel 2 — ROI crop (padded back to subframe size)
         roi = sub[top:bottom, :]
@@ -183,6 +201,7 @@ def main() -> int:
     _add_player_args(p_run)
     p_run.add_argument("--port", help="serial port to the Pi Pico")
     p_run.add_argument("--no-serial", action="store_true", help="use NullLink (no Pico)")
+    p_run.add_argument("--debug", action="store_true", help="print confidence/steering/phase every 10 frames")
     p_run.set_defaults(func=_cmd_run)
 
     p_preview = sub.add_parser("preview", help="show the CV overlay for tuning (no output)")
