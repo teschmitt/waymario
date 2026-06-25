@@ -68,6 +68,8 @@ def _apply_player_args(args: argparse.Namespace, config: Config) -> None:
 
 
 def _cmd_run(args: argparse.Namespace) -> int:
+    from .stream import MJPEGServer
+
     config = Config()
     config.steerer = args.steerer
     if args.device is not None:
@@ -76,9 +78,59 @@ def _cmd_run(args: argparse.Namespace) -> int:
     link = _connect_daemon(args.daemon, config)
     if link is None:
         return 1
-    with link, _build_source(args, config) as source:
-        run(source, build_steerer(config), link, config, debug=args.debug)
+
+    server: MJPEGServer | None = None
+    on_frame = None
+    if args.stream:
+        server = MJPEGServer(port=args.stream_port)
+        server.start()
+
+        def on_frame(frame, decision, state, phase):  # type: ignore[misc]
+            import cv2
+            sub, x0, y0 = _subframe_coords(frame, config)
+            annotated = _annotate(frame.copy(), decision, state, phase, config, sub, x0, y0)
+            server.push(annotated)  # type: ignore[union-attr]
+
+    try:
+        with link, _build_source(args, config) as source:
+            run(source, build_steerer(config), link, config, debug=args.debug, on_frame=on_frame)
+    finally:
+        if server:
+            server.stop()
     return 0
+
+
+def _subframe_coords(frame, config: Config):
+    import cv2
+    h, w = frame.shape[:2]
+    px0, py0, px1, py1 = config.player_region()
+    x0, y0 = int(w * px0), int(h * py0)
+    x1, y1 = int(w * px1), int(h * py1)
+    return frame[y0:y1, x0:x1], x0, y0
+
+
+def _annotate(frame, decision, state, phase: str, config: Config, sub, x0: int, y0: int):
+    import cv2
+    sub_h, sub_w = sub.shape[:2]
+    top = y0 + int(sub_h * config.roi_top)
+    bottom = y0 + int(sub_h * config.roi_bottom)
+    cv2.rectangle(frame, (x0, top), (x0 + sub_w, bottom), (0, 255, 0), 1)
+    if decision.lateral is not None:
+        cx = x0 + int((decision.lateral + 1) / 2 * sub_w)
+        cv2.line(frame, (cx, top), (cx, bottom), (0, 0, 255), 2)
+    bar_color = (0, 0, 180) if phase != "NORMAL" else (0, 80, 0)
+    cv2.rectangle(frame, (x0, y0), (x0 + sub_w, y0 + 36), bar_color, -1)
+    mode_tag = f"[{phase}]" if phase != "NORMAL" else "[DRIVE]"
+    text = (
+        f"P{config.player} {mode_tag}  "
+        f"conf={decision.confidence:.3f}  "
+        f"steer={decision.steering:+.2f}  "
+        f"stick=({state.stick_x:+d},{state.stick_y:+d})"
+    )
+    cv2.putText(frame, text, (x0 + 8, y0 + 26),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+    _draw_buttons(frame, state, x0 + 8, y0 + 42)
+    return frame
 
 
 def _parse_host_port(value: str, default_port: int) -> tuple[str, int]:
@@ -359,6 +411,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_run.add_argument("--debug", action="store_true", help="print confidence/steering/phase every 10 frames")
     p_run.add_argument("--device", type=int, default=None, metavar="N", help="V4L2 video device index (default: 1)")
+    p_run.add_argument("--stream", action="store_true", help="serve a live annotated MJPEG stream while driving")
+    p_run.add_argument("--stream-port", type=int, default=8080, metavar="PORT", help="MJPEG server port (default: 8080)")
     p_run.set_defaults(func=_cmd_run)
 
     p_keyboard = sub.add_parser(

@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
+
+import numpy as np
 
 from .capture import FrameSource
 from .config import Config
 from .control import ControllerState, drive_policy
-from .steering import Steerer
+from .steering import SteeringDecision, Steerer
 from .stuck import StuckDetector
 from .transport import ControllerLink
+
+OnFrameCallback = Callable[[np.ndarray, SteeringDecision, ControllerState, str], None]
 
 _DEBUG_EVERY = 10  # print one line every N frames to avoid flooding the terminal
 
@@ -20,6 +25,7 @@ def run(
     link: ControllerLink,
     config: Config,
     debug: bool = False,
+    on_frame: OnFrameCallback | None = None,
 ) -> None:
     """Drive until the source is exhausted or interrupted.
 
@@ -37,8 +43,13 @@ def run(
             decision = steerer.decide(frame)
             # Let the stuck detector override the normal policy if recovering.
             recovery = stuck.update(frame, decision)
+            decision.steering = decision.steering * 80
+            
             state = recovery if recovery is not None else drive_policy(decision, config)
             link.send(state)
+
+            if on_frame is not None:
+                on_frame(frame, decision, state, stuck._phase.name)
 
             if debug and frame_no % _DEBUG_EVERY == 0:
                 mode = "RECOVER" if recovery is not None else "DRIVE  "
