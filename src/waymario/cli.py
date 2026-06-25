@@ -8,7 +8,7 @@ from .capture import CaptureDeviceSource, FrameSource, VideoFileSource
 from .config import Config
 from .control import drive_policy
 from .drive import run
-from .steering import OpenCVSteerer
+from .steering import build_steerer
 from .stuck import StuckDetector
 from .transport import ControllerLink, NullLink, SerialLink
 
@@ -35,9 +35,10 @@ def _cmd_run(args: argparse.Namespace) -> int:
     config = Config()
     if args.port:
         config.serial_port = args.port
+    config.steerer = args.steerer
     _apply_player_args(args, config)
     with _build_source(args, config) as source, _build_link(args, config) as link:
-        run(source, OpenCVSteerer(config), link, config, debug=args.debug)
+        run(source, build_steerer(config), link, config, debug=args.debug)
     return 0
 
 
@@ -50,7 +51,8 @@ def _cmd_preview(args: argparse.Namespace) -> int:
 
     config = Config()
     _apply_player_args(args, config)
-    steerer = OpenCVSteerer(config)
+    config.steerer = args.steerer
+    steerer = build_steerer(config)
     stuck = StuckDetector(config)
 
     use_stream = args.stream
@@ -70,29 +72,29 @@ def _cmd_preview(args: argparse.Namespace) -> int:
         bar_color = (0, 0, 180) if phase != "NORMAL" else (0, 80, 0)
         cv2.rectangle(frame, (x0, y0), (x0 + sw, y0 + 36), bar_color, -1)
         mode_tag = f"[{phase}]" if phase != "NORMAL" else "[DRIVE]"
+        hue_txt = f"  hue={decision.hue:.0f}" if decision.hue is not None else ""
         text = (
             f"P{config.player} {mode_tag}  "
             f"conf={decision.confidence:.3f}  "
-            f"steer={decision.steering:+.2f}  "
+            f"steer={decision.steering:+.2f}{hue_txt}  "
             f"stick=({state.stick_x:+d},{state.stick_y:+d})"
         )
         cv2.putText(frame, text, (x0 + 8, y0 + 26),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
     def _process_frame(frame: "cv2.typing.MatLike") -> "cv2.typing.MatLike":
-        """Annotate frame with ROI box, centroid line, HUD and stuck state."""
+        """Annotate frame with the active steerer's ROI box, position line, HUD."""
         decision = steerer.decide(frame)
         recovery = stuck.update(frame, decision)
         state = recovery if recovery is not None else drive_policy(decision, config)
         phase = stuck._phase.name
         sub, x0, y0 = _subframe(frame)
         sub_h, sub_w = sub.shape[:2]
-        top = y0 + int(sub_h * config.roi_top)
-        bottom = y0 + int(sub_h * config.roi_bottom)
-        cv2.rectangle(frame, (x0, top), (x0 + sub_w, bottom), (0, 255, 0), 1)
+        rx0, ry0, rx1, ry1 = steerer.roi_box(sub_h, sub_w)
+        cv2.rectangle(frame, (x0 + rx0, y0 + ry0), (x0 + rx1, y0 + ry1), (0, 255, 0), 1)
         if decision.centroid_x is not None:
             cx = x0 + int((decision.centroid_x + 1) / 2 * sub_w)
-            cv2.line(frame, (cx, top), (cx, bottom), (0, 0, 255), 2)
+            cv2.line(frame, (cx, y0 + ry0), (cx, y0 + ry1), (0, 0, 255), 2)
         _hud(frame, decision, state, phase)
         return frame
 
@@ -153,7 +155,7 @@ def _cmd_preview(args: argparse.Namespace) -> int:
         bot_row = np.hstack([p3, p4])
         return np.vstack([top_row, bot_row])
 
-    process = _debug_mosaic if args.debug else _process_frame
+    process = _debug_mosaic if (args.debug and config.steerer == "brightness") else _process_frame
 
     import time
     frame_period = 1.0 / args.stream_fps
@@ -203,13 +205,23 @@ def _add_player_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def main() -> int:
+def _add_steerer_arg(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--steerer",
+        choices=["hsv", "brightness"],
+        default="hsv",
+        help="steering algorithm: hsv (color-band, default) or brightness (centroid)",
+    )
+
+
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="waymario", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_run = sub.add_parser("run", help="drive live: capture -> steer -> controller")
     _add_source_args(p_run)
     _add_player_args(p_run)
+    _add_steerer_arg(p_run)
     p_run.add_argument("--port", help="serial port to the Pi Pico")
     p_run.add_argument("--no-serial", action="store_true", help="use NullLink (no Pico)")
     p_run.add_argument("--debug", action="store_true", help="print confidence/steering/phase every 10 frames")
@@ -218,6 +230,7 @@ def main() -> int:
     p_preview = sub.add_parser("preview", help="show the CV overlay for tuning (no output)")
     _add_source_args(p_preview)
     _add_player_args(p_preview)
+    _add_steerer_arg(p_preview)
     p_preview.add_argument(
         "--stream",
         action="store_true",
@@ -240,9 +253,12 @@ def main() -> int:
     p_preview.add_argument(
         "--debug",
         action="store_true",
-        help="show 2x2 mosaic of preprocessing steps (original / ROI / grayscale / threshold)",
+        help="show 2x2 mosaic of preprocessing steps (brightness steerer only)",
     )
     p_preview.set_defaults(func=_cmd_preview)
+    return parser
 
-    args = parser.parse_args()
+
+def main() -> int:
+    args = _build_parser().parse_args()
     return args.func(args)
