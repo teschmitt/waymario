@@ -84,13 +84,16 @@ def _parse_host_port(value: str, default_port: int) -> tuple[str, int]:
 
 def _cmd_keyboard(args: argparse.Namespace) -> int:
     """Manually drive the console from the keyboard, via the controller daemon."""
-    from .keyboard import run_keyboard
+    from .keyboard import LatestLine, run_keyboard
 
     config = Config()
     host, port = _parse_host_port(args.daemon, config.daemon_port)
+    # Capture the daemon's broadcasts into the status line instead of letting them
+    # scroll past the controls.
+    latest = LatestLine()
     try:
-        with TcpLink(host, port) as link:
-            run_keyboard(link, config)
+        with TcpLink(host, port, on_line=latest.set) as link:
+            run_keyboard(link, config, status=latest.get)
     except (ConnectionError, OSError) as exc:
         print(f"error: couldn't reach daemon at {host}:{port}: {exc}", file=sys.stderr)
         return 1

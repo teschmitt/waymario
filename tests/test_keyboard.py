@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from waymario.config import Config
 from waymario.control import Button, ControllerState
-from waymario.keyboard import _HOLD_SECONDS, KeyboardDriver
+from waymario.keyboard import _BTN_DEBOUNCE, _HOLD_SECONDS, KeyboardDriver, _format_buttons
 
 
 def _driver() -> KeyboardDriver:
@@ -73,6 +73,43 @@ def test_opposite_directions_cancel() -> None:
     d = _driver()
     d.feed(b"ad", 0.0)  # left + right
     assert d.state(0.0).stick_x == 0
+
+
+def test_button_latches_on_then_off() -> None:
+    d = _driver()
+    d.feed(b" ", 0.0)  # tap A on
+    assert d.state(0.0).buttons & Button.A
+    # Still latched long after, with no further input (no auto-repeat needed).
+    assert d.state(5.0).buttons & Button.A
+    d.feed(b" ", 5.0)  # tap A off
+    assert not d.state(5.0).buttons & Button.A
+
+
+def test_button_repeat_within_debounce_toggles_once() -> None:
+    d = _driver()
+    d.feed(b" ", 0.0)  # tap on
+    d.feed(b" ", _BTN_DEBOUNCE / 2)  # auto-repeat burst, ignored
+    assert d.state(1.0).buttons & Button.A  # still on, not flipped back off
+
+
+def test_latched_button_holds_while_stick_decays() -> None:
+    # The parallel case: A stays held while you steer with a momentary arrow.
+    d = _driver()
+    d.feed(b" ", 0.0)  # latch A
+    d.feed(b"\x1b[C", 1.0)  # steer right a second later
+    state = d.state(1.0)
+    assert state.buttons & Button.A
+    assert state.stick_x == Config().max_stick
+    # Stick decays; A remains latched.
+    later = d.state(1.0 + _HOLD_SECONDS + 0.001)
+    assert later.stick_x == 0
+    assert later.buttons & Button.A
+
+
+def test_format_buttons() -> None:
+    assert _format_buttons(Button(0)) == "-"
+    assert _format_buttons(Button.A) == "A"
+    assert _format_buttons(Button.A | Button.B) == "A B"
 
 
 def test_q_sets_quit() -> None:
