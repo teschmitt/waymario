@@ -220,7 +220,8 @@ def _cmd_preview(args: argparse.Namespace) -> int:
             f"P{config.player} {mode_tag}  "
             f"conf={decision.confidence:.3f}  "
             f"steer={decision.steering:+.2f}{hue_txt}  "
-            f"stick=({state.stick_x:+d},{state.stick_y:+d})"
+            f"stick=({state.stick_x:+d},{state.stick_y:+d})  "
+            f"dir={stuck.last_direction}({stuck.last_gradient:+.0f})"
         )
         cv2.putText(frame, text, (x0 + 8, y0 + 26),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
@@ -236,6 +237,13 @@ def _cmd_preview(args: argparse.Namespace) -> int:
         sub_h, sub_w = sub.shape[:2]
         rx0, ry0, rx1, ry1 = steerer.roi_box(sub_h, sub_w)
         cv2.rectangle(frame, (x0 + rx0, y0 + ry0), (x0 + rx1, y0 + ry1), (0, 255, 0), 1)
+        # Wrong-way strip: the near look-ahead window whose near->far hue gradient
+        # tells forward from reversed (drawn orange to distinguish from the steer ROI).
+        wx0 = x0 + int(sub_w * config.wrong_way_roi_left)
+        wx1 = x0 + int(sub_w * config.wrong_way_roi_right)
+        wy0 = y0 + int(sub_h * config.wrong_way_roi_top)
+        wy1 = y0 + int(sub_h * config.wrong_way_roi_bottom)
+        cv2.rectangle(frame, (wx0, wy0), (wx1, wy1), (0, 165, 255), 1)
         if decision.lateral is not None:
             cx = x0 + int((decision.lateral + 1) / 2 * sub_w)
             cv2.line(frame, (cx, y0 + ry0), (cx, y0 + ry1), (0, 0, 255), 2)
