@@ -1,24 +1,33 @@
 """Stuck detection and recovery.
 
-``StuckDetector`` watches two signals every frame:
+Mario Kart 64's Rainbow Road is a ribbon of brightly colored stripes — a *spectrum*
+of hues, so no single color dominates the view ahead. Its guard rails are a single
+color (a green / gold-star barrier). When the kart rams a rail head-on, that one
+color fills the look-ahead view, so the patch in front of Mario stops looking like a
+rainbow and becomes dominated by one hue.
 
-1. **Frame diff** — the mean absolute difference between the current and
-   previous frame (cropped to the player's subframe).  If the image barely
-   changes for ``stuck_frames`` consecutive frames the kart is probably not
-   moving.
+``StuckDetector`` inspects a small front look-ahead box every frame and measures, of
+the colored (saturated, bright) pixels, the fraction that fall in the single most
+common hue bucket:
 
-2. **Low confidence streak** — if the steerer can't find the track for
-   ``stuck_frames`` consecutive frames the kart is likely facing a wall or
-   has fallen off.
+* **Track ahead** — the rainbow spreads across many hue buckets, so the dominant
+  bucket holds only ~20-25%.
+* **Rail ahead**  — one color fills the box, so the dominant bucket holds ~50-100%
+  (and bare space off the edge has almost no colored pixels at all).
 
-Either condition triggers a *recovery sequence*:
+Counting *distinct* colors is not enough: a stuck scene still contains several
+colors (the green rail, gold stars, the kart, the red "REVERSE" prompt). What sets
+the rainbow apart is that its colors are spread *evenly* — no one of them dominates.
 
-    Phase 1 — REVERSE:  hold B + reverse stick-Y for ``recovery_reverse_frames``
-    Phase 2 — TURN:     hold B + full stick-X for ``recovery_turn_frames``
-    Phase 3 — RESUME:   hand back to normal drive_policy
+If the rainbow stays missing for ``stuck_frames`` consecutive frames the kart is
+wedged against a rail, and recovery kicks in:
 
-The turn direction alternates each recovery so the bot doesn't spin forever
-on the same side.
+    RECOVER:  hold A (keep driving) + full **right** stick, until the rainbow
+              reappears for ``recovery_clear_frames`` consecutive frames.
+
+We deliberately do **not** reverse out of the rail — backing off a Rainbow Road rail
+tends to drop the kart off the edge. Powering forward while steering hard right
+scrubs the kart along the rail and back onto the ribbon.
 """
 
 from __future__ import annotations
@@ -36,108 +45,109 @@ from .steering import SteeringDecision
 
 class _Phase(Enum):
     NORMAL = auto()
-    REVERSE = auto()
-    TURN = auto()
+    RECOVER = auto()
 
 
 @dataclass
 class StuckDetector:
     config: Config
     _phase: _Phase = field(default=_Phase.NORMAL, init=False)
-    _phase_frames: int = field(default=0, init=False)
-    _low_conf_streak: int = field(default=0, init=False)
-    _diff_streak: int = field(default=0, init=False)
-    _prev_gray: np.ndarray | None = field(default=None, init=False)
-    _recovery_count: int = field(default=0, init=False)  # how many recoveries so far
-    _turn_direction: int = field(default=1, init=False)  # +1 right, -1 left
+    _absent_streak: int = field(default=0, init=False)   # consecutive frames rainbow missing
+    _present_streak: int = field(default=0, init=False)  # consecutive frames rainbow back
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
     def update(self, frame: np.ndarray, decision: SteeringDecision) -> ControllerState | None:
-        """Feed one frame + steering decision.
+        """Feed one frame. ``decision`` is accepted for API symmetry but unused —
+        the model is purely the color of the road ahead.
 
-        Returns:
-            A recovery ``ControllerState`` while stuck, or ``None`` to let
-            the normal ``drive_policy`` take over.
+        Returns a recovery ``ControllerState`` while wedged against a rail, or
+        ``None`` to let the normal ``drive_policy`` take over.
         """
         cfg = self.config
-        subframe = self._crop_subframe(frame)
-        gray = cv2.cvtColor(subframe, cv2.COLOR_BGR2GRAY)
+        rainbow_ahead = self._rainbow_ahead(frame)
 
-        # --- update streak counters (only in NORMAL phase) ---
         if self._phase is _Phase.NORMAL:
-            # frame diff streak
-            if self._prev_gray is not None and self._prev_gray.shape == gray.shape:
-                diff = float(np.mean(np.abs(gray.astype(np.int16) - self._prev_gray.astype(np.int16))))
-                if diff < cfg.stuck_frame_diff_threshold:
-                    self._diff_streak += 1
-                else:
-                    self._diff_streak = 0
-            # low-confidence streak
-            if decision.confidence < cfg.min_confidence:
-                self._low_conf_streak += 1
+            if rainbow_ahead:
+                self._absent_streak = 0
             else:
-                self._low_conf_streak = 0
+                self._absent_streak += 1
+            if self._absent_streak >= max(1, cfg.stuck_frames):
+                self._enter_recover()
+                return self._recovery_state()
+            return None
 
-            if self._diff_streak >= cfg.stuck_frames or self._low_conf_streak >= cfg.stuck_frames:
-                self._start_recovery()
-
-        self._prev_gray = gray
-
-        # --- drive recovery phases ---
-        if self._phase is _Phase.NORMAL:
-            return None  # normal driving
-
-        if self._phase is _Phase.REVERSE:
-            state = ControllerState(
-                stick_x=0,
-                stick_y=-cfg.max_stick,
-                buttons=Button.B,
-            )
-            self._phase_frames += 1
-            if self._phase_frames > cfg.recovery_reverse_frames:
-                self._phase = _Phase.TURN
-                self._phase_frames = 0
-            return state
-
-        if self._phase is _Phase.TURN:
-            state = ControllerState(
-                stick_x=self._turn_direction * cfg.max_stick,
-                stick_y=-cfg.max_stick,
-                buttons=Button.B,
-            )
-            self._phase_frames += 1
-            if self._phase_frames > cfg.recovery_turn_frames:
-                self._end_recovery()
-            return state
-
-        return None  # should never reach here
+        # _Phase.RECOVER — keep driving + hard right until the rainbow is back.
+        if rainbow_ahead:
+            self._present_streak += 1
+        else:
+            self._present_streak = 0
+        if self._present_streak >= max(1, cfg.recovery_clear_frames):
+            self._exit_recover()
+            return None
+        return self._recovery_state()
 
     @property
     def is_recovering(self) -> bool:
-        return self._phase is not _Phase.NORMAL
+        return self._phase is _Phase.RECOVER
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _crop_subframe(self, frame: np.ndarray) -> np.ndarray:
+    def _recovery_state(self) -> ControllerState:
+        """Keep accelerating (A) and steer hard right; never reverse."""
+        return ControllerState(stick_x=self.config.max_stick, stick_y=0, buttons=Button.A)
+
+    def _rainbow_ahead(self, frame: np.ndarray) -> bool:
+        """True if the front box shows the rainbow track (a many-hued spectrum),
+        False if a single color (a guard rail) or empty space fills the view."""
+        cfg = self.config
+        colored_frac, dominant_frac = self._front_color_stats(frame)
+        if colored_frac < cfg.stuck_min_colored_frac:
+            return False  # almost no track color ahead — void off the edge / too dim
+        return dominant_frac <= cfg.stuck_max_dominant_frac
+
+    def _front_color_stats(self, frame: np.ndarray) -> tuple[float, float]:
+        """Measure the front look-ahead box and return ``(colored_frac, dominant_frac)``.
+
+        ``colored_frac`` is the fraction of the box that is saturated/bright enough
+        to be track rather than the black starfield. ``dominant_frac`` is, of those
+        colored pixels, the fraction in the single most-populated hue bucket — low
+        for the rainbow's spectrum, high for a one-color rail.
+        """
+        cfg = self.config
+        roi = self._front_roi(frame)
+        if roi.size == 0:
+            return 0.0, 1.0
+        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+        hue, sat, val = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
+        colored = hue[(sat >= cfg.stuck_min_sat) & (val >= cfg.stuck_min_val)]
+        total = hue.size
+        if total == 0 or colored.size == 0:
+            return 0.0, 1.0
+        hist, _ = np.histogram(colored, bins=cfg.stuck_hue_bins, range=(0, 180))
+        return colored.size / total, float(hist.max()) / colored.size
+
+    def _front_roi(self, frame: np.ndarray) -> np.ndarray:
+        """Crop to this player's quadrant, then to the front look-ahead box."""
+        cfg = self.config
         h, w = frame.shape[:2]
-        px0, py0, px1, py1 = self.config.player_region()
-        return frame[int(h * py0):int(h * py1), int(w * px0):int(w * px1)]
+        px0, py0, px1, py1 = cfg.player_region()
+        sub = frame[int(h * py0):int(h * py1), int(w * px0):int(w * px1)]
+        sh, sw = sub.shape[:2]
+        y0, y1 = int(sh * cfg.stuck_roi_top), int(sh * cfg.stuck_roi_bottom)
+        x0, x1 = int(sw * cfg.stuck_roi_left), int(sw * cfg.stuck_roi_right)
+        return sub[y0:y1, x0:x1]
 
-    def _start_recovery(self) -> None:
-        self._phase = _Phase.REVERSE
-        self._phase_frames = 0
-        self._diff_streak = 0
-        self._low_conf_streak = 0
-        self._recovery_count += 1
-        # alternate turn direction each recovery
-        self._turn_direction = 1 if self._recovery_count % 2 == 1 else -1
+    def _enter_recover(self) -> None:
+        self._phase = _Phase.RECOVER
+        self._absent_streak = 0
+        self._present_streak = 0
 
-    def _end_recovery(self) -> None:
+    def _exit_recover(self) -> None:
         self._phase = _Phase.NORMAL
-        self._phase_frames = 0
-        self._prev_gray = None  # reset diff so we don't immediately re-trigger
+        self._absent_streak = 0
+        self._present_streak = 0

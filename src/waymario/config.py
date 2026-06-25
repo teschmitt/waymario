@@ -97,17 +97,37 @@ class Config:
     """Default TCP port for the controller daemon (``waymario daemon``) and the
     keyboard client that connects to it."""
 
-    # --- stuck detection & recovery ---
-    stuck_frames: int = 90
-    """Consecutive frames of no motion *or* no track before recovery triggers.
-    At 60 fps this is 1.5 s."""
-    stuck_frame_diff_threshold: float = 2.0
-    """Mean absolute pixel difference below which a frame counts as 'no motion'.
-    0 = pixel-perfect identical; ~2 tolerates compression noise."""
-    recovery_reverse_frames: int = 60
-    """Frames to hold B (reverse) at the start of recovery (~1 s at 60 fps)."""
-    recovery_turn_frames: int = 45
-    """Frames to hold B + full stick while turning out of the wall (~0.75 s)."""
+    # --- stuck detection (rail vs rainbow) & recovery ---
+    stuck_frames: int = 30
+    """Consecutive frames with the rainbow track missing from the front look-ahead
+    box (a guard rail filling the view) before recovery triggers. ~0.5 s at 60 fps."""
+    stuck_roi_left: float = 0.35
+    stuck_roi_right: float = 0.65
+    stuck_roi_top: float = 0.55
+    stuck_roi_bottom: float = 0.82
+    """Front look-ahead box (fractions of the player sub-frame) inspected for the
+    rainbow track. When Mario rams a rail head-on this box fills with the rail's
+    single color instead of the rainbow's many-hued stripes."""
+    stuck_min_sat: int = 60
+    """Minimum HSV saturation for a pixel to count as colored track rather than
+    the black starfield / dim background."""
+    stuck_min_val: int = 60
+    """Minimum HSV value/brightness for a pixel to count as colored track."""
+    stuck_hue_bins: int = 12
+    """Hue buckets across OpenCV's 0..179 range. The rainbow spreads its colored
+    pixels across many buckets; a single-colored rail piles them into one."""
+    stuck_max_dominant_frac: float = 0.40
+    """If the single most-populated hue bucket holds more than this fraction of the
+    colored pixels in the front box, one color dominates the view (a guard rail)
+    rather than the rainbow's spectrum -> stuck. Rainbow Road measures ~0.2-0.25;
+    a rail measures ~0.5-1.0, so 0.4 sits in the gap."""
+    stuck_min_colored_frac: float = 0.12
+    """The front box must be at least this fraction saturated/bright 'track' color
+    before its hue spread is judged at all; below it there's no track ahead (a dark
+    void off the edge, or noise too sparse to trust), which also counts as stuck."""
+    recovery_clear_frames: int = 8
+    """Consecutive frames the rainbow track must be visible again before recovery
+    ends and normal steering resumes (hysteresis, ~0.13 s at 60 fps)."""
 
     # --- loop ---
     target_fps: float = 60.0
