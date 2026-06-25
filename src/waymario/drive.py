@@ -75,6 +75,7 @@ def run(
                     f"steer={decision.steering:+.2f} "
                     f"stick_x={state.stick_x:+4d} stick_y={state.stick_y:+4d} "
                     f"dir={stuck.last_direction}({stuck.last_gradient:+.0f}) "
+                    f"mot={stuck.last_motion:.1f} "
                     f"phase={phase}",
                     flush=True,
                 )

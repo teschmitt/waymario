@@ -66,38 +66,34 @@ def _bgr_for_hue(hue: int, sat: int = 200, val: int = 200) -> tuple[int, int, in
     return int(b), int(g), int(r)
 
 
-def _solid_hue_frame(hue: int, width: int = 640, height: int = 200,
-                     sat: int = 200, val: int = 200) -> np.ndarray:
-    """Frame filled with one HSV color, so the centered patch samples that hue."""
+def _colored_strip_frame(width: int, x0: int, x1: int, hue: int = 10,
+                         height: int = 200) -> np.ndarray:
+    """Black frame with a saturated coloured strip in [x0, x1), spanning the ROI band."""
     frame = np.zeros((height, width, 3), dtype=np.uint8)
-    frame[:] = _bgr_for_hue(hue, sat, val)
+    frame[:, x0:x1] = _bgr_for_hue(hue, sat=200, val=200)
     return frame
 
 
-def test_hsv_red_patch_steers_right() -> None:
-    # Red (low hue) => too far left (e_y<0) => steer right (steering>0).
+def test_hsv_colored_track_on_right_steers_right() -> None:
+    # Coloured ribbon on the right of the ROI => centroid offset > 0 => steer right.
     steerer = HSVSteerer(Config())
-    decision = steerer.decide(_solid_hue_frame(hue=10))
+    decision = steerer.decide(_colored_strip_frame(640, 500, 560))
     assert decision.steering > 0
-    assert decision.lateral is not None and decision.lateral < 0
-    assert decision.confidence > 0.9
-    assert decision.hue is not None
-
-
-def test_hsv_purple_patch_steers_left() -> None:
-    # Purple (high hue) => too far right (e_y>0) => steer left (steering<0).
-    steerer = HSVSteerer(Config())
-    decision = steerer.decide(_solid_hue_frame(hue=135))
-    assert decision.steering < 0
     assert decision.lateral is not None and decision.lateral > 0
-    assert decision.confidence > 0.9
+    assert decision.confidence > 0
     assert decision.hue is not None
 
 
-def test_hsv_center_hue_goes_straight() -> None:
-    # Midpoint of hue_left=5 and hue_right=140 is 72.5 => e_y ~ 0.
+def test_hsv_colored_track_on_left_steers_left() -> None:
     steerer = HSVSteerer(Config())
-    decision = steerer.decide(_solid_hue_frame(hue=72))
+    decision = steerer.decide(_colored_strip_frame(640, 80, 140))
+    assert decision.steering < 0
+    assert decision.lateral is not None and decision.lateral < 0
+
+
+def test_hsv_centered_track_goes_straight() -> None:
+    steerer = HSVSteerer(Config())
+    decision = steerer.decide(_colored_strip_frame(640, 300, 340))
     assert abs(decision.steering) < 0.05
 
 
@@ -111,14 +107,25 @@ def test_hsv_desaturated_frame_coasts_straight() -> None:
     assert decision.lateral is None
 
 
-def test_hsv_partial_patch_has_fractional_confidence() -> None:
-    # Left half colored, right half black; centered patch straddles the seam.
+def test_hsv_rejects_desaturated_bright_frame() -> None:
+    # White is bright but unsaturated: the saturation gate rejects it, so HSV coasts
+    # where a brightness threshold would chase it. This is HSV's edge over brightness.
+    steerer = HSVSteerer(Config())
+    frame = np.full((200, 640, 3), 255, dtype=np.uint8)
+    decision = steerer.decide(frame)
+    assert decision.confidence < Config().min_confidence
+    assert decision.steering == 0.0
+    assert decision.lateral is None
+
+
+def test_hsv_partial_roi_has_fractional_confidence() -> None:
+    # Left half coloured, right half black: centroid sits left => steer left.
     frame = np.zeros((200, 640, 3), dtype=np.uint8)
     frame[:, :320] = _bgr_for_hue(10)
     steerer = HSVSteerer(Config())
     decision = steerer.decide(frame)
     assert 0.2 < decision.confidence < 0.8
-    assert decision.steering > 0  # red pixels present -> steers right
+    assert decision.steering < 0
 
 
 def test_hsv_roi_box_within_subframe() -> None:
@@ -143,11 +150,3 @@ def test_build_steerer_selects_brightness() -> None:
 def test_build_steerer_rejects_unknown() -> None:
     with pytest.raises(ValueError):
         build_steerer(Config(steerer="rainbow"))
-
-
-def test_hsv_equal_edge_hues_coasts() -> None:
-    # Misconfigured equal edge hues must coast, not raise ZeroDivisionError.
-    steerer = HSVSteerer(Config(hue_left=70.0, hue_right=70.0))
-    decision = steerer.decide(_solid_hue_frame(hue=70))
-    assert decision.steering == 0.0
-    assert decision.lateral is None

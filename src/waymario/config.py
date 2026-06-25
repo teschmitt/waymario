@@ -50,8 +50,12 @@ class Config:
     height: int | None = None
 
     # --- steering / vision ---
-    steerer: str = "straight"#"brightness"
-    """Which steering algorithm to use: "hsv" (color-band) or "brightness" (centroid)."""
+    steerer: str = "hsv"
+    """Which steering algorithm to use. "hsv" (default: centroid of the colour-masked
+    rainbow ribbon — saturation gating rejects the HUD/flames a brightness threshold
+    catches), "brightness" (centroid of the lit track), or "straight" (debug: no
+    steering). Both hsv and brightness steer from a track-centroid offset; they differ
+    only in how they segment the track."""
     roi_top: float = 0.45
     """Fraction of the *player's sub-frame* height where the ROI starts (look ahead,
     ignore the sky/HUD above)."""
@@ -67,24 +71,15 @@ class Config:
     straight rather than chase noise."""
 
     # --- HSV color-band steering ---
-    hue_left: float = 5.0
-    """OpenCV hue (0..179) at the track's left/red edge -> e_y = -1."""
-    hue_right: float = 140.0
-    """OpenCV hue at the track's right/purple edge -> e_y = +1."""
-    hue_gain: float = 1.0
-    """Maps normalized cross-track error e_y (-1..1) to a steering command."""
+    # The HSV steerer reuses roi_top/roi_bottom (the look-ahead band) and
+    # steering_gain (centroid offset -> steering); these two gates define which
+    # pixels count as coloured rainbow track for its centroid.
     hue_min_sat: int = 60
-    """Minimum saturation for a pixel to count as colored track."""
+    """Minimum HSV saturation for a pixel to count as coloured rainbow track —
+    rejects the desaturated HUD text / white boost flames a brightness threshold
+    would otherwise pull the centroid toward."""
     hue_min_val: int = 60
-    """Minimum value/brightness for a pixel to count as colored track."""
-    hue_patch_cx: float = 0.5
-    """Look-ahead patch center x, fraction of the player sub-frame width."""
-    hue_patch_cy: float = 0.62
-    """Look-ahead patch center y, fraction of sub-frame height (above the tires)."""
-    hue_patch_w: float = 0.12
-    """Patch width, fraction of sub-frame width."""
-    hue_patch_h: float = 0.10
-    """Patch height, fraction of sub-frame height."""
+    """Minimum HSV value/brightness for a pixel to count as coloured track."""
 
     # --- control ---
     max_stick: int = 80
@@ -125,6 +120,16 @@ class Config:
     """The front box must be at least this fraction saturated/bright 'track' color
     before its hue spread is judged at all; below it there's no track ahead (a dark
     void off the edge, or noise too sparse to trust), which also counts as stuck."""
+    stuck_static_max_diff: float = 5.0
+    """Mean absolute grayscale frame-to-frame difference in the front box below which
+    the view counts as *frozen*. A rail/void ahead only arms recovery when the view is
+    also this still — a kart wedged against a wall makes no forward progress so its
+    image stops changing, whereas normal driving keeps the image flowing even over a
+    uniform-coloured stretch that would otherwise trip the dominant-hue test. This is
+    what stops rainbow-up-close (one stripe filling the near box) from false-triggering.
+    Measured on live footage: wedged <=~4, driving median ~13 (resolution-independent,
+    it's a per-pixel mean). The reversed/wrong-way path is NOT motion-gated — the kart
+    is still moving when it faces backwards."""
     recovery_clear_frames: int = 8
     """Consecutive frames the rainbow track must be visible again before recovery
     ends and normal steering resumes (hysteresis, ~0.13 s at 60 fps)."""

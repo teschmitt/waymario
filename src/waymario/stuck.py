@@ -19,11 +19,19 @@ Counting *distinct* colors is not enough: a stuck scene still contains several
 colors (the green rail, gold stars, the kart, the red "REVERSE" prompt). What sets
 the rainbow apart is that its colors are spread *evenly* — no one of them dominates.
 
-If the rainbow stays missing for ``stuck_frames`` consecutive frames the kart is
-wedged against a rail, and recovery kicks in:
+A single colour filling the box is *necessary* but not sufficient: a kart driving
+forward over a uniform-coloured stretch (or rainbow seen up close, where one stripe
+fills the near box) trips the dominant-hue test too, yet it is not stuck. The tell is
+**motion** — a wedged kart makes no forward progress, so its view freezes, while a
+driving kart's view keeps flowing. So the rail/void verdict is gated on the front box
+being *frozen* frame-to-frame (mean abs grayscale diff below ``stuck_static_max_diff``).
+
+If the rainbow stays missing **and the view stays frozen** for ``stuck_frames``
+consecutive frames the kart is wedged against a rail, and recovery kicks in:
 
     RECOVER:  hold A (keep driving) + full **right** stick, until the rainbow
-              reappears for ``recovery_clear_frames`` consecutive frames.
+              reappears (or the view starts flowing) for ``recovery_clear_frames``
+              consecutive frames.
 
 We deliberately do **not** reverse out of the rail — backing off a Rainbow Road rail
 tends to drop the kart off the edge. Powering forward while steering hard right
@@ -73,6 +81,8 @@ class StuckDetector:
     _last_gradient: float = field(default=0.0, init=False)   # last near->far hue gradient
     _last_dir_valid: bool = field(default=False, init=False)  # was that gradient readable
     _last_reversed: bool = field(default=False, init=False)   # did it read wrong-way
+    _prev_front: np.ndarray | None = field(default=None, init=False)  # last front-box gray
+    _last_motion: float = field(default=0.0, init=False)      # last front-box frame diff
 
     # ------------------------------------------------------------------
     # Public API
@@ -86,24 +96,20 @@ class StuckDetector:
         the wrong way, or ``None`` to let the normal ``drive_policy`` take over.
         """
         cfg = self.config
-        front_ok = self._front_ok(frame)
+        wedged, good_road = self._assess(frame)
 
         if self._phase is _Phase.NORMAL:
-            if front_ok:
-                self._absent_streak = 0
-            else:
-                self._absent_streak += 1
+            # Arm only on a real wedge: a frozen rail/void, or facing backwards.
+            self._absent_streak = self._absent_streak + 1 if wedged else 0
             if self._absent_streak >= max(1, cfg.stuck_frames):
                 self._enter_recover()
                 return self._recovery_state()
             return None
 
-        # _Phase.RECOVER — keep driving + hard right until the road ahead is good
-        # again (rainbow present *and* pointing forward).
-        if front_ok:
-            self._present_streak += 1
-        else:
-            self._present_streak = 0
+        # _Phase.RECOVER — keep driving + hard right until the road ahead is genuinely
+        # good again (rainbow present *and* forward); a moving-but-railed view is not
+        # enough to end recovery.
+        self._present_streak = self._present_streak + 1 if good_road else 0
         if self._present_streak >= max(1, cfg.recovery_clear_frames):
             self._exit_recover()
             return None
@@ -117,6 +123,11 @@ class StuckDetector:
     def last_gradient(self) -> float:
         """Most recent near→far hue gradient (signed; +forward, -reversed)."""
         return self._last_gradient
+
+    @property
+    def last_motion(self) -> float:
+        """Most recent front-box frame-to-frame mean abs diff (low = frozen/wedged)."""
+        return self._last_motion
 
     @property
     def last_direction(self) -> str:
@@ -137,13 +148,23 @@ class StuckDetector:
         """Keep accelerating (A) and steer hard right; never reverse."""
         return ControllerState(stick_x=self.config.max_stick, stick_y=0, buttons=Button.A)
 
-    def _front_ok(self, frame: np.ndarray) -> bool:
-        """True when the road ahead is healthy: the rainbow is present *and* not
-        running backwards. A missing rainbow (rail/void) or a clearly reversed one
-        is 'bad' and drives the recovery state machine. Records the direction
-        reading for the HUD as a side effect."""
+    def _assess(self, frame: np.ndarray) -> tuple[bool, bool]:
+        """Read the road ahead once and return ``(wedged, good_road)``.
+
+        ``wedged`` (recovery *enter* condition): a missing rainbow (rail/void) while the
+        view is **frozen**, or a clearly reversed rainbow. The freeze test is what tells
+        a real wedge from driving over a uniform-coloured stretch, which trips the
+        dominant-hue test but keeps the image flowing.
+
+        ``good_road`` (recovery *exit* condition): the rainbow is present and running
+        forward. Deliberately asymmetric with ``wedged`` — recovery should end only when
+        the real track is back, not merely because the kart is sliding along the rail.
+
+        Records the direction and motion readings for the HUD as a side effect.
+        """
         cfg = self.config
         rainbow_ahead = self._rainbow_ahead(frame)
+        moving = self._update_motion(frame)
         gradient, dir_valid = self._direction_gradient(frame)
         reversed_ahead = (
             rainbow_ahead and dir_valid and gradient <= -cfg.wrong_way_min_gradient
@@ -151,7 +172,24 @@ class StuckDetector:
         self._last_gradient = gradient
         self._last_dir_valid = dir_valid
         self._last_reversed = reversed_ahead
-        return rainbow_ahead and not reversed_ahead
+
+        wedged = ((not rainbow_ahead) and not moving) or reversed_ahead
+        good_road = rainbow_ahead and not reversed_ahead
+        return wedged, good_road
+
+    def _update_motion(self, frame: np.ndarray) -> bool:
+        """True if the front look-ahead box is changing frame-to-frame (the kart is
+        making forward progress), False if it is frozen (wedged). The first frame has
+        no predecessor so it reads as frozen — safe, because a real wedge still needs
+        ``stuck_frames`` consecutive frozen frames to arm recovery."""
+        gray = cv2.cvtColor(self._front_roi(frame), cv2.COLOR_BGR2GRAY)
+        prev = self._prev_front
+        self._prev_front = gray
+        if prev is None or prev.shape != gray.shape or gray.size == 0:
+            self._last_motion = 0.0
+            return False
+        self._last_motion = float(cv2.absdiff(gray, prev).mean())
+        return self._last_motion > self.config.stuck_static_max_diff
 
     def _direction_gradient(self, frame: np.ndarray) -> tuple[float, bool]:
         """Sum the signed near→far circular hue steps across the wrong-way strip.

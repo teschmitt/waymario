@@ -221,7 +221,8 @@ def _cmd_preview(args: argparse.Namespace) -> int:
             f"conf={decision.confidence:.3f}  "
             f"steer={decision.steering:+.2f}{hue_txt}  "
             f"stick=({state.stick_x:+d},{state.stick_y:+d})  "
-            f"dir={stuck.last_direction}({stuck.last_gradient:+.0f})"
+            f"dir={stuck.last_direction}({stuck.last_gradient:+.0f})  "
+            f"mot={stuck.last_motion:.1f}"
         )
         cv2.putText(frame, text, (x0 + 8, y0 + 26),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
@@ -399,7 +400,7 @@ def _add_steerer_arg(parser: argparse.ArgumentParser) -> None:
         "--steerer",
         choices=["hsv", "brightness", "straight"],
         default="hsv",
-        help="steering algorithm: hsv (color-band, default), brightness (centroid), or straight (debug: no steering)",
+        help="steering algorithm: hsv (colour-mask centroid, default), brightness (brightness centroid), or straight (debug: no steering)",
     )
 
 

@@ -26,7 +26,7 @@ class SteeringDecision:
     confidence: float
     """Fraction of the ROI that read as track (0..1)."""
     lateral: float | None = None
-    """Normalized lateral indicator within the sub-frame, -1..1 (None if no track seen). OpenCVSteerer: track-centroid offset. HSVSteerer: cross-track error e_y."""
+    """Normalized track-centroid offset within the sub-frame, -1..1 (None if no track seen). Both OpenCVSteerer and HSVSteerer report the centroid's horizontal offset; they differ only in how they segment the track (brightness threshold vs. HSV colour mask)."""
     hue: float | None = None
     """Median OpenCV hue (0..179) sampled by HSVSteerer (None for other steerers)."""
 
@@ -91,66 +91,57 @@ class OpenCVSteerer(Steerer):
 
 
 class HSVSteerer(Steerer):
-    """Read lateral position from the track's red->purple hue gradient.
+    """Steer from the rainbow ribbon's position, located by colour.
 
-    Sample one small look-ahead patch, take the median hue of on-track
-    (saturated, bright) pixels, map it linearly to a cross-track error, and
-    steer against that error.
+    Rainbow Road is a vividly *coloured* ribbon over a black starfield. We build a
+    mask of saturated, bright pixels across a full-width look-ahead ROI — that picks
+    out the ribbon and, unlike a plain brightness threshold, rejects the desaturated
+    HUD text and white boost flames — then steer from the horizontal offset of that
+    mask's centroid, exactly as ``OpenCVSteerer`` does with its brightness mask.
+
+    (An earlier version mapped the ribbon's *hue* to a cross-track error. On Rainbow
+    Road, though, hue varies with look-ahead *depth* — which stripe you are looking
+    at — not with lateral position, so the median hue of a fixed patch was nearly
+    constant and the kart drove in circles. The near→far hue gradient is still a real
+    signal, but it tells forward from reversed, not left from right — see
+    ``stuck.StuckDetector._direction_gradient``.)
     """
 
     def __init__(self, config: Config) -> None:
         self._config = config
 
-    def _patch_bounds(self, sub_h: int, sub_w: int) -> tuple[int, int, int, int]:
-        cfg = self._config
-        cx = cfg.hue_patch_cx * sub_w
-        cy = cfg.hue_patch_cy * sub_h
-        half_w = cfg.hue_patch_w * sub_w / 2.0
-        half_h = cfg.hue_patch_h * sub_h / 2.0
-        x0 = max(0, int(cx - half_w))
-        y0 = max(0, int(cy - half_h))
-        x1 = min(sub_w, int(cx + half_w))
-        y1 = min(sub_h, int(cy + half_h))
-        return x0, y0, x1, y1
-
     def roi_box(self, sub_h: int, sub_w: int) -> tuple[int, int, int, int]:
-        return self._patch_bounds(sub_h, sub_w)
+        cfg = self._config
+        return (0, int(sub_h * cfg.roi_top), sub_w, int(sub_h * cfg.roi_bottom))
 
     def decide(self, frame: np.ndarray) -> SteeringDecision:
         cfg = self._config
         subframe = _subframe(frame, cfg)
         sub_h, sub_w = subframe.shape[:2]
 
-        x0, y0, x1, y1 = self._patch_bounds(sub_h, sub_w)
-        patch = subframe[y0:y1, x0:x1]
-        if patch.size == 0:
+        top = int(sub_h * cfg.roi_top)
+        bottom = int(sub_h * cfg.roi_bottom)
+        roi = subframe[top:bottom, :]
+        if roi.size == 0:
             return SteeringDecision(steering=0.0, confidence=0.0, lateral=None, hue=None)
 
-        hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
-        h = hsv[:, :, 0]
-        s = hsv[:, :, 1]
-        v = hsv[:, :, 2]
+        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+        h, s, v = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
+        mask = (s >= cfg.hue_min_sat) & (v >= cfg.hue_min_val)
 
-        gate = (s >= cfg.hue_min_sat) & (v >= cfg.hue_min_val)
-        passed = h[gate]
-        total = h.size
-        confidence = float(passed.size) / float(total) if total else 0.0
-
-        if passed.size == 0 or confidence < cfg.min_confidence:
-            # No trustworthy colored track in the patch — coast straight.
+        lit = int(np.count_nonzero(mask))
+        confidence = lit / mask.size if mask.size else 0.0
+        if confidence < cfg.min_confidence:
+            # No trustworthy coloured track ahead — coast straight.
             return SteeringDecision(steering=0.0, confidence=confidence, lateral=None, hue=None)
 
-        # Plain median is correct only because the gradient stays within H~0..160 and
-        # never crosses the OpenCV red/magenta hue wrap (179->0). Off-track pixels are
-        # already removed by the S/V gate above.
-        hue = float(np.median(passed))
-        span = cfg.hue_right - cfg.hue_left
-        if span == 0:
-            # Misconfigured edge hues — can't form an error; coast (keep the hue diagnostic).
-            return SteeringDecision(steering=0.0, confidence=confidence, lateral=None, hue=hue)
-        e_y = _clamp(2.0 * (hue - cfg.hue_left) / span - 1.0)
-        steering = _clamp(-cfg.hue_gain * e_y)
-        return SteeringDecision(steering=steering, confidence=confidence, lateral=e_y, hue=hue)
+        moments = cv2.moments(mask.astype(np.uint8), binaryImage=True)
+        cx = moments["m10"] / moments["m00"]
+        offset = (cx - sub_w / 2) / (sub_w / 2)
+        steering = _clamp(offset * cfg.steering_gain)
+
+        hue = float(np.median(h[mask]))  # diagnostic only (HUD); steering is centroid-based
+        return SteeringDecision(steering=steering, confidence=confidence, lateral=offset, hue=hue)
 
 
 class StraightSteerer(Steerer):

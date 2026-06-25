@@ -1,7 +1,13 @@
 """Tests for StuckDetector — the rail-vs-rainbow color model, no hardware needed.
 
 The model: the rainbow track is a spectrum (no single hue dominates the front box),
-while a guard rail is one dominant color. See ``stuck.StuckDetector``.
+while a guard rail is one dominant color. A dominant color is only a *wedge* when the
+front view is also frozen frame-to-frame — driving over a uniform stretch trips the
+dominant-hue test but keeps moving. See ``stuck.StuckDetector``.
+
+Most tests feed the *same* frame repeatedly: identical consecutive frames read as
+frozen (motion 0), so the rail/void cases still trigger. The motion gate is exercised
+explicitly by the "moving uniform stretch" tests below.
 """
 
 from __future__ import annotations
@@ -160,6 +166,48 @@ def test_multi_colored_scene_is_not_track_if_one_color_dominates() -> None:
     for _ in range(cfg.stuck_frames):
         det.update(frame, _decision())
     assert det.is_recovering
+
+
+# ---------------------------------------------------------------------------
+# Motion gate: a single dominant color is a wedge only when the view is frozen
+# ---------------------------------------------------------------------------
+
+def _moving(base: np.ndarray, i: int) -> np.ndarray:
+    """``base`` on even calls, a dimmed copy on odd ones — consecutive frames differ
+    far above the freeze threshold (the kart is moving) while the dominant hue is
+    unchanged (still one color)."""
+    return base if i % 2 else (base * 0.5).astype(np.uint8)
+
+
+def test_moving_uniform_stretch_does_not_trigger() -> None:
+    """The bug this guards: a single-color stretch (or rainbow seen up close) seen while
+    DRIVING trips the dominant-hue test, but the view keeps changing, so it is not a
+    wedge. Without the motion gate this false-triggered recovery -> constant hard right
+    -> the kart circled right. See ``stuck_static_max_diff``."""
+    cfg = _config()
+    det = StuckDetector(cfg)
+    base = _rail_frame(hue=60)
+    result: object = "sentinel"
+    for i in range(cfg.stuck_frames * 4):
+        result = det.update(_moving(base, i), _decision())
+    assert not det.is_recovering
+    assert result is None
+
+
+def test_recovery_does_not_exit_on_motion_alone() -> None:
+    """Enter/exit asymmetry: sliding along the rail (the view moves but no rainbow is
+    back) must NOT end recovery — only the real forward rainbow returning does."""
+    cfg = _config()
+    det = StuckDetector(cfg)
+    for _ in range(cfg.stuck_frames):
+        det.update(_rail_frame(), _decision())
+    assert det.is_recovering
+    base = _rail_frame(hue=60)
+    for i in range(cfg.recovery_clear_frames * 3):
+        state = det.update(_moving(base, i), _decision())  # moving, still railed
+        assert det.is_recovering
+        assert state is not None
+        assert state.stick_x == cfg.max_stick
 
 
 # ---------------------------------------------------------------------------
