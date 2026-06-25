@@ -11,3 +11,6 @@ build/
 
 # project
 clips/
+
+# superpowers SDD scratch (briefs, review packages, progress ledger)
+.superpowers/

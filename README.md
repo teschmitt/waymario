@@ -8,7 +8,7 @@ controller signal** — no human input.
 
 ```
 HDMI capture → [capture] → frame
-               [steer]   → SteeringDecision   (classical OpenCV)
+               [steer]   → SteeringDecision   (hsv color-band, or brightness centroid)
                [control] → ControllerState     (stick + buttons)
                [transport] → serial → Pi Pico → joybus → N64
 ```
@@ -35,6 +35,9 @@ uv run waymario run --port /dev/ttyACM0
 
 # Dry run on a recording, no Pico
 uv run waymario run --video clips/rainbow_road.mp4 --loop --no-serial
+
+# Pick the steering algorithm (default: hsv color-band)
+uv run waymario run --video clips/rainbow_road.mp4 --no-serial --steerer brightness
 
 # Tune the vision with a debug overlay (press q to quit)
 uv run waymario preview --video clips/rainbow_road.mp4 --loop

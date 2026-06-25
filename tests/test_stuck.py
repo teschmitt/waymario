@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
 from waymario.config import Config
 from waymario.control import Button
@@ -34,11 +33,11 @@ def _noisy_frame(h: int = 64, w: int = 64) -> np.ndarray:
 
 
 def _good_decision() -> SteeringDecision:
-    return SteeringDecision(steering=0.0, confidence=0.5, centroid_x=0.0)
+    return SteeringDecision(steering=0.0, confidence=0.5, lateral=0.0)
 
 
 def _bad_decision() -> SteeringDecision:
-    return SteeringDecision(steering=0.0, confidence=0.0, centroid_x=None)
+    return SteeringDecision(steering=0.0, confidence=0.0, lateral=None)
 
 
 # ---------------------------------------------------------------------------

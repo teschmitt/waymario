@@ -50,6 +50,8 @@ class Config:
     height: int | None = None
 
     # --- steering / vision ---
+    steerer: str = "hsv"
+    """Which steering algorithm to use: "hsv" (color-band) or "brightness" (centroid)."""
     roi_top: float = 0.45
     """Fraction of the *player's sub-frame* height where the ROI starts (look ahead,
     ignore the sky/HUD above)."""
@@ -63,6 +65,26 @@ class Config:
     min_confidence: float = 0.01
     """Minimum fraction of ROI lit up to trust the centroid; below this we coast
     straight rather than chase noise."""
+
+    # --- HSV color-band steering ---
+    hue_left: float = 5.0
+    """OpenCV hue (0..179) at the track's left/red edge -> e_y = -1."""
+    hue_right: float = 140.0
+    """OpenCV hue at the track's right/purple edge -> e_y = +1."""
+    hue_gain: float = 1.0
+    """Maps normalized cross-track error e_y (-1..1) to a steering command."""
+    hue_min_sat: int = 60
+    """Minimum saturation for a pixel to count as colored track."""
+    hue_min_val: int = 60
+    """Minimum value/brightness for a pixel to count as colored track."""
+    hue_patch_cx: float = 0.5
+    """Look-ahead patch center x, fraction of the player sub-frame width."""
+    hue_patch_cy: float = 0.62
+    """Look-ahead patch center y, fraction of sub-frame height (above the tires)."""
+    hue_patch_w: float = 0.12
+    """Patch width, fraction of sub-frame width."""
+    hue_patch_h: float = 0.10
+    """Patch height, fraction of sub-frame height."""
 
     # --- control ---
     max_stick: int = 80
@@ -95,4 +117,4 @@ class Config:
             raise ValueError(
                 f"Invalid combination: players={self.players}, player={self.player}. "
                 f"Valid players values are 1-4 and player must be within that range."
-            )
+            ) from None
