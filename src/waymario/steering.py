@@ -26,11 +26,21 @@ class SteeringDecision:
     confidence: float
     """Fraction of the ROI that read as track (0..1)."""
     centroid_x: float | None = None
-    """Normalized centroid offset within the ROI, -1..1 (None if no track seen)."""
+    """Normalized lateral indicator within the sub-frame, -1..1 (None if no track seen).
+    OpenCVSteerer: track centroid offset. HSVSteerer: cross-track error e_y."""
+    hue: float | None = None
+    """Median OpenCV hue (0..179) sampled by HSVSteerer (None for other steerers)."""
 
 
 def _clamp(value: float, low: float = -1.0, high: float = 1.0) -> float:
     return max(low, min(high, value))
+
+
+def _subframe(frame: np.ndarray, cfg: Config) -> np.ndarray:
+    """Crop a frame to this player's screen quadrant (fractions from config)."""
+    height, width = frame.shape[:2]
+    px0, py0, px1, py1 = cfg.player_region()
+    return frame[int(height * py0):int(height * py1), int(width * px0):int(width * px1)]
 
 
 class Steerer(ABC):
@@ -38,22 +48,24 @@ class Steerer(ABC):
     def decide(self, frame: np.ndarray) -> SteeringDecision:
         """Decide how to steer for a single BGR frame."""
 
+    @abstractmethod
+    def roi_box(self, sub_h: int, sub_w: int) -> tuple[int, int, int, int]:
+        """Return the (x0, y0, x1, y1) sub-frame rectangle this steerer samples."""
+
 
 class OpenCVSteerer(Steerer):
     def __init__(self, config: Config) -> None:
         self._config = config
 
+    def roi_box(self, sub_h: int, sub_w: int) -> tuple[int, int, int, int]:
+        cfg = self._config
+        return (0, int(sub_h * cfg.roi_top), sub_w, int(sub_h * cfg.roi_bottom))
+
     def decide(self, frame: np.ndarray) -> SteeringDecision:
         cfg = self._config
-        height, width = frame.shape[:2]
 
         # Crop to this player's screen quadrant first.
-        px0, py0, px1, py1 = cfg.player_region()
-        sub_x0 = int(width * px0)
-        sub_y0 = int(height * py0)
-        sub_x1 = int(width * px1)
-        sub_y1 = int(height * py1)
-        subframe = frame[sub_y0:sub_y1, sub_x0:sub_x1]
+        subframe = _subframe(frame, cfg)
         sub_h, sub_w = subframe.shape[:2]
 
         # ROI is relative to the player's sub-frame.
@@ -68,14 +80,11 @@ class OpenCVSteerer(Steerer):
         confidence = lit / mask.size if mask.size else 0.0
 
         if confidence < cfg.min_confidence:
-            # No trustworthy track in view — coast straight rather than chase noise.
             return SteeringDecision(steering=0.0, confidence=confidence, centroid_x=None)
 
-        # Centroid x of the lit pixels within the sub-frame.
         moments = cv2.moments(mask, binaryImage=True)
         cx = moments["m10"] / moments["m00"]
 
-        # Normalize to -1 (left edge) .. +1 (right edge) of the sub-frame.
         offset = (cx - sub_w / 2) / (sub_w / 2)
         steering = _clamp(offset * cfg.steering_gain)
 

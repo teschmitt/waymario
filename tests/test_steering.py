@@ -5,7 +5,18 @@ from __future__ import annotations
 import numpy as np
 
 from waymario.config import Config
-from waymario.steering import OpenCVSteerer
+from waymario.steering import OpenCVSteerer, SteeringDecision
+
+
+def test_steering_decision_has_hue_field_defaulting_none() -> None:
+    d = SteeringDecision(steering=0.0, confidence=0.0)
+    assert d.hue is None
+
+
+def test_opencv_roi_box_is_full_width_band() -> None:
+    steerer = OpenCVSteerer(Config())
+    # Config defaults: roi_top=0.45, roi_bottom=0.95
+    assert steerer.roi_box(sub_h=100, sub_w=200) == (0, 45, 200, 95)
 
 
 def _frame_with_bright_strip(width: int, x0: int, x1: int, height: int = 200) -> np.ndarray:
