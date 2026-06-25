@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 
 from .capture import CaptureDeviceSource, FrameSource, VideoFileSource
 from .config import Config
@@ -70,6 +71,22 @@ def _cmd_run(args: argparse.Namespace) -> int:
     _apply_player_args(args, config)
     with _build_source(args, config) as source, _build_link(args, config) as link:
         run(source, build_steerer(config), link, config, debug=args.debug)
+    return 0
+
+
+def _cmd_keyboard(args: argparse.Namespace) -> int:
+    """Manually drive the console from the keyboard (no capture, no steering)."""
+    from .keyboard import run_keyboard
+
+    config = Config()
+    if args.port:
+        config.serial_port = args.port
+    try:
+        with _build_link(args, config) as link:
+            run_keyboard(link, config)
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     return 0
 
 
@@ -297,6 +314,18 @@ def _build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--debug", action="store_true", help="print confidence/steering/phase every 10 frames")
     p_run.add_argument("--device", type=int, default=None, metavar="N", help="V4L2 video device index (default: 1)")
     p_run.set_defaults(func=_cmd_run)
+
+    p_keyboard = sub.add_parser(
+        "keyboard",
+        help="manually drive from the keyboard for debugging (no capture/steering)",
+        description=(
+            "Drive the console by hand from the terminal. Keys: arrows or WASD steer "
+            "the stick, space=A, b=B, z=Z, l/r=L/R, enter=Start, q/Ctrl-C to quit."
+        ),
+    )
+    p_keyboard.add_argument("--port", help="serial port to the Pi Pico")
+    p_keyboard.add_argument("--no-serial", action="store_true", help="use NullLink (no Pico)")
+    p_keyboard.set_defaults(func=_cmd_keyboard)
 
     p_preview = sub.add_parser("preview", help="show the CV overlay for tuning (no output)")
     _add_source_args(p_preview)
