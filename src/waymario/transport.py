@@ -41,6 +41,7 @@ _BUTTON_CHARS: list[tuple[Button, str]] = [
     (Button.R,     "r"),
     (Button.L,     "l"),
     (Button.START, "s"),
+    (Button.U,     "u"),
 ]
 
 # Inverse lookup for decode(): single character -> Button flag.

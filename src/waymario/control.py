@@ -28,6 +28,7 @@ class Button(IntFlag):
     D_DOWN = 0x0400
     D_LEFT = 0x0200
     D_RIGHT = 0x0100
+    U = 0x0040
     # status byte 1
     L = 0x0020
     R = 0x0010

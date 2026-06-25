@@ -50,7 +50,7 @@ class Config:
     height: int | None = None
 
     # --- steering / vision ---
-    steerer: str = "hsv"
+    steerer: str = "brightness"
     """Which steering algorithm to use: "hsv" (color-band) or "brightness" (centroid)."""
     roi_top: float = 0.45
     """Fraction of the *player's sub-frame* height where the ROI starts (look ahead,

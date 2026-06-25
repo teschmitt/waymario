@@ -36,6 +36,13 @@ def run(
     stuck = StuckDetector(config)
     frame_no = 0
     last_z_time = time.monotonic()
+    z_hold_until = 0.0
+
+    # Press U for 1 second at startup.
+    link.send(ControllerState(buttons=Button.U))
+    time.sleep(1.0)
+    link.send(ControllerState())  # release
+
     try:
         for frame in source.frames():
             start = time.monotonic()
@@ -44,14 +51,15 @@ def run(
             decision = steerer.decide(frame)
             # Let the stuck detector override the normal policy if recovering.
             recovery = stuck.update(frame, decision)
-            decision.steering = decision.steering
-            
             state = recovery if recovery is not None else drive_policy(decision, config)
 
-            # Press Z every 2 seconds (combined with whatever buttons are active).
-            if start - last_z_time >= 2.0:
-                state.buttons |= Button.Z
+            # Press Z+U for 10 frames every 0.5 seconds (combined with whatever buttons are active).
+            if start - last_z_time >= 0.5:
+                z_hold_until = frame_no + 10
                 last_z_time = start
+            if frame_no <= z_hold_until:
+                state.buttons |= Button.Z
+                state.buttons |= Button.U
 
             link.send(state)
 
