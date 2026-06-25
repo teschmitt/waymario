@@ -15,16 +15,18 @@ import pytest
 from waymario.config import Config
 from waymario.control import Button
 from waymario.steering import SteeringDecision
-from waymario.stuck import StuckDetector
+from waymario.stuck import StuckDetector, _circ_delta
 
 _REPO = Path(__file__).resolve().parent.parent
 _SAMPLE_NOT_STUCK = _REPO / "sample-not-stuck.png"
 _SAMPLE_STUCK = _REPO / "sample-stuck.png"
+_SAMPLE2 = _REPO / "sample2.png"
 
 
 def _config(**kwargs) -> Config:
-    """Config with fast timings and a whole sub-frame box, so the synthetic
-    rainbow/rail frames below exercise the detector independent of ROI placement."""
+    """Config with fast timings and whole sub-frame boxes (both the rail box and the
+    wrong-way strip), so the synthetic rainbow/rail frames below exercise the detector
+    independent of ROI placement."""
     defaults = dict(
         stuck_frames=5,
         recovery_clear_frames=3,
@@ -33,6 +35,10 @@ def _config(**kwargs) -> Config:
         stuck_roi_right=1.0,
         stuck_roi_top=0.0,
         stuck_roi_bottom=1.0,
+        wrong_way_roi_left=0.0,
+        wrong_way_roi_right=1.0,
+        wrong_way_roi_top=0.0,
+        wrong_way_roi_bottom=1.0,
     )
     defaults.update(kwargs)
     return Config(**defaults)
@@ -44,8 +50,23 @@ def _decision() -> SteeringDecision:
 
 
 def _rainbow_frame(h: int = 96, w: int = 96) -> np.ndarray:
-    """A saturated full 0..179 hue sweep down the rows = the rainbow track
-    (a spectrum where no single hue dominates)."""
+    """A saturated hue sweep that climbs near->far (bottom row low hue, top row high)
+    = the rainbow track driven the *correct* way (a spectrum where no single hue
+    dominates, and whose near->far gradient reads forward). The hue *histogram* is
+    the same whichever way the sweep runs, so the rail/dominant-hue tests are
+    orientation-independent; only the direction tests care which way it climbs."""
+    hsv = np.zeros((h, w, 3), dtype=np.uint8)
+    hsv[:, :, 0] = np.linspace(179, 0, h).astype(np.uint8)[:, None]
+    hsv[:, :, 1] = 220
+    hsv[:, :, 2] = 200
+    return cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+
+
+def _reversed_rainbow_frame(h: int = 96, w: int = 96) -> np.ndarray:
+    """The rainbow track driven the *wrong* way: the same spectrum, but its hue
+    descends near->far (bottom row high hue, top row low), so the gradient reads
+    reversed. Same histogram as ``_rainbow_frame`` -> still 'rainbow present', just
+    backwards."""
     hsv = np.zeros((h, w, 3), dtype=np.uint8)
     hsv[:, :, 0] = np.linspace(0, 179, h).astype(np.uint8)[:, None]
     hsv[:, :, 1] = 220
@@ -319,3 +340,155 @@ def test_real_stuck_sample_triggers_recovery() -> None:
     # margin guard: the rail's dominant hue sits clearly above the cutoff.
     _colored, dominant = det._front_color_stats(img)
     assert dominant >= cfg.stuck_max_dominant_frac + 0.05
+
+
+# ===========================================================================
+# Wrong-way (reversed-rainbow) detection
+#
+# Driven forward, the rainbow's stripe colours climb the hue circle near->far
+# (blue -> violet -> red -> orange -> yellow -> green); driven backwards they
+# descend. The detector reads the sign of that near->far hue gradient and, when
+# clearly reversed, triggers the same forward + hard-right recovery as a rail-ram.
+# ===========================================================================
+
+# --- the circular hue-step helper ---------------------------------------------
+
+def test_circ_delta_small_steps_keep_sign() -> None:
+    assert _circ_delta(10, 30) == 20      # forward step
+    assert _circ_delta(30, 10) == -20     # backward step
+
+
+def test_circ_delta_wraps_the_short_way() -> None:
+    # 170 -> 10 is +20 across the 179/0 seam (red wrap), not -160.
+    assert _circ_delta(170, 10) == 20
+    assert _circ_delta(10, 170) == -20
+
+
+def test_circ_delta_is_antisymmetric() -> None:
+    for a, b in [(0, 45), (120, 5), (89, 175), (60, 60)]:
+        assert _circ_delta(a, b) == -_circ_delta(b, a)
+
+
+# --- the near->far gradient ----------------------------------------------------
+
+def test_forward_rainbow_gradient_is_positive() -> None:
+    det = StuckDetector(_config())
+    g, valid = det._direction_gradient(_rainbow_frame())
+    assert valid
+    assert g >= det.config.wrong_way_min_gradient   # clearly forward
+
+
+def test_reversed_rainbow_gradient_is_negative() -> None:
+    det = StuckDetector(_config())
+    g, valid = det._direction_gradient(_reversed_rainbow_frame())
+    assert valid
+    assert g <= -det.config.wrong_way_min_gradient   # clearly reversed
+
+
+def test_flat_color_gradient_is_ambiguous_not_reversed() -> None:
+    """A single-hue wall has no near->far gradient: |G| stays inside the deadband,
+    so the wrong-way path never fires on it (the rail/dominant path handles walls)."""
+    det = StuckDetector(_config())
+    g, _valid = det._direction_gradient(_rail_frame(hue=60))
+    assert abs(g) < det.config.wrong_way_min_gradient
+
+
+def test_void_gradient_is_invalid() -> None:
+    det = StuckDetector(_config())
+    _g, valid = det._direction_gradient(_void_frame())
+    assert not valid   # no coloured bands -> direction unreadable
+
+
+# --- triggering & recovery -----------------------------------------------------
+
+def test_reversed_rainbow_triggers_recovery() -> None:
+    cfg = _config()
+    det = StuckDetector(cfg)
+    state = None
+    for _ in range(cfg.stuck_frames):
+        state = det.update(_reversed_rainbow_frame(), _decision())
+    assert det.is_recovering
+    assert state is not None
+    assert Button.A in state.buttons        # keep driving
+    assert Button.B not in state.buttons     # never reverse
+    assert state.stick_x == cfg.max_stick    # hard right
+    assert state.stick_y == 0
+
+
+def test_forward_rainbow_is_not_wrong_way() -> None:
+    cfg = _config()
+    det = StuckDetector(cfg)
+    result: object = "sentinel"
+    for _ in range(cfg.stuck_frames * 3):
+        result = det.update(_rainbow_frame(), _decision())
+    assert not det.is_recovering
+    assert result is None
+
+
+def test_reversed_recovery_does_not_clear_while_still_reversed() -> None:
+    """The key correctness check: a reversed rainbow is still 'present', so the old
+    'rainbow reappeared' exit would wrongly end recovery. Recovery must persist as
+    long as the colours stay backwards."""
+    cfg = _config()
+    det = StuckDetector(cfg)
+    for _ in range(cfg.stuck_frames):
+        det.update(_reversed_rainbow_frame(), _decision())
+    assert det.is_recovering
+    for _ in range(cfg.recovery_clear_frames * 3):
+        state = det.update(_reversed_rainbow_frame(), _decision())
+        assert det.is_recovering            # never clears while reversed
+        assert state is not None
+        assert state.stick_x == cfg.max_stick
+
+
+def test_reversed_recovery_clears_once_forward_again() -> None:
+    cfg = _config()
+    det = StuckDetector(cfg)
+    for _ in range(cfg.stuck_frames):
+        det.update(_reversed_rainbow_frame(), _decision())
+    assert det.is_recovering
+    # turning back to the correct direction clears recovery after the hysteresis
+    result: object = "sentinel"
+    for _ in range(cfg.recovery_clear_frames):
+        result = det.update(_rainbow_frame(), _decision())
+    assert not det.is_recovering
+    assert result is None
+
+
+def test_brief_wrong_way_blip_does_not_trigger() -> None:
+    """A single reversed frame inside forward driving must not arm recovery."""
+    cfg = _config()
+    det = StuckDetector(cfg)
+    for _ in range(cfg.stuck_frames - 1):
+        det.update(_reversed_rainbow_frame(), _decision())
+    assert not det.is_recovering
+    det.update(_rainbow_frame(), _decision())          # forward resets the streak
+    for _ in range(cfg.stuck_frames - 1):
+        det.update(_reversed_rainbow_frame(), _decision())
+    assert not det.is_recovering
+
+
+def test_wrong_way_reads_own_quadrant() -> None:
+    """Player 4 reading a reversed rainbow recovers even while other quadrants drive
+    forward — direction is judged per-quadrant like everything else."""
+    cfg = _config(players=4, player=4)
+    det = StuckDetector(cfg)
+    frame = _quad_frame(p4=_reversed_rainbow_frame(), rest=_rainbow_frame())
+    for _ in range(cfg.stuck_frames):
+        det.update(frame, _decision())
+    assert det.is_recovering
+
+
+# --- grounded on the real forward sample --------------------------------------
+
+@pytest.mark.skipif(not _SAMPLE2.exists(), reason="sample not present")
+def test_real_forward_sample_reads_forward() -> None:
+    """sample2.png is Mario driving the correct way; its near->far hue gradient must
+    read forward (positive) with the default ROI/thresholds. No real reversed-rainbow
+    frame exists yet, so the reversed direction is covered only synthetically above."""
+    img = cv2.imread(str(_SAMPLE2))
+    assert img is not None
+    det = StuckDetector(Config())   # default ROI + thresholds
+    g, valid = det._direction_gradient(img)
+    assert valid
+    assert g > 0

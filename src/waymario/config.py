@@ -129,6 +129,32 @@ class Config:
     """Consecutive frames the rainbow track must be visible again before recovery
     ends and normal steering resumes (hysteresis, ~0.13 s at 60 fps)."""
 
+    # --- wrong-way (reversed-rainbow) detection ---
+    # Rainbow Road's stripes run across the track; driven forward, their colours
+    # climb the hue circle near->far: blue -> violet -> red -> orange -> yellow ->
+    # green. Driven backwards the order flips. We read the sign of that near->far
+    # hue gradient and, when it is clearly reversed, trigger the same forward +
+    # hard-right recovery as a rail-ram (never reverse off Rainbow Road).
+    wrong_way_bands: int = 8
+    """Horizontal bands the look-ahead strip is split into, near->far. Each band
+    contributes one median hue; consecutive bands give the gradient steps."""
+    wrong_way_roi_top: float = 0.45
+    wrong_way_roi_bottom: float = 0.92
+    wrong_way_roi_left: float = 0.40
+    wrong_way_roi_right: float = 0.60
+    """Near look-ahead strip (fractions of the player sub-frame) whose vertical hue
+    gradient is read. Kept central and near so the ribbon hasn't curved off-frame."""
+    wrong_way_min_gradient: float = 30.0
+    """Minimum magnitude of the summed near->far circular hue gradient (OpenCV hue
+    units) to trust a direction. Below this the reading is ambiguous (coast/keep
+    going); at or below -this with the rainbow present it reads as wrong-way."""
+    wrong_way_min_band_frac: float = 0.15
+    """A band needs at least this fraction of saturated/bright pixels to contribute
+    a hue; sparser bands are dropped so off-track noise doesn't skew the gradient."""
+    wrong_way_min_bands: int = 3
+    """Minimum number of contributing bands before a direction is judged at all;
+    fewer than this and the gradient is treated as unreadable (not wrong-way)."""
+
     # --- loop ---
     target_fps: float = 60.0
 
