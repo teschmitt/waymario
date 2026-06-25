@@ -1,0 +1,36 @@
+[project]
+name = "waymario"
+version = "0.1.0"
+description = "Autonomous Mario Kart 64 Rainbow Road driver: HDMI capture -> CV -> N64 controller"
+readme = "README.md"
+authors = [
+    { name = "Thomas Schmitt", email = "t.e.schmitt@posteo.de" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "numpy>=2.5.0",
+    "opencv-python>=4.13.0.92",
+    "pyserial>=3.5",
+]
+
+[project.scripts]
+waymario = "waymario:main"
+
+[build-system]
+requires = ["uv_build>=0.11.22,<0.12.0"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+extend-select = ["I", "B", "UP"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.15.19",
+]
