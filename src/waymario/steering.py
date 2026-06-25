@@ -153,12 +153,27 @@ class HSVSteerer(Steerer):
         return SteeringDecision(steering=steering, confidence=confidence, lateral=e_y, hue=hue)
 
 
+class StraightSteerer(Steerer):
+    """Debug steerer: always drives straight ahead, no vision needed."""
+
+    def __init__(self, config: Config) -> None:
+        self._config = config
+
+    def roi_box(self, sub_h: int, sub_w: int) -> tuple[int, int, int, int]:
+        return (0, 0, sub_w, sub_h)
+
+    def decide(self, frame: np.ndarray) -> SteeringDecision:
+        return SteeringDecision(steering=0.0, confidence=1.0, lateral=None, hue=None)
+
+
 def build_steerer(config: Config) -> Steerer:
     """Construct the steerer named by ``config.steerer``."""
     if config.steerer == "hsv":
         return HSVSteerer(config)
     if config.steerer == "brightness":
         return OpenCVSteerer(config)
+    if config.steerer == "straight":
+        return StraightSteerer(config)
     raise ValueError(
-        f"unknown steerer {config.steerer!r}; expected 'hsv' or 'brightness'"
+        f"unknown steerer {config.steerer!r}; expected 'hsv', 'brightness', or 'straight'"
     )

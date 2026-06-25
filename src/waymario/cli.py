@@ -397,9 +397,9 @@ def _add_player_args(parser: argparse.ArgumentParser) -> None:
 def _add_steerer_arg(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--steerer",
-        choices=["hsv", "brightness"],
+        choices=["hsv", "brightness", "straight"],
         default="hsv",
-        help="steering algorithm: hsv (color-band, default) or brightness (centroid)",
+        help="steering algorithm: hsv (color-band, default), brightness (centroid), or straight (debug: no steering)",
     )
 
 
