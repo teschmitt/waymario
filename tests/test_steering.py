@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import cv2
 import numpy as np
+import pytest
 
 from waymario.config import Config
-from waymario.steering import HSVSteerer, OpenCVSteerer, SteeringDecision
+from waymario.steering import HSVSteerer, OpenCVSteerer, SteeringDecision, build_steerer
 
 
 def test_steering_decision_has_hue_field_defaulting_none() -> None:
@@ -121,3 +122,20 @@ def test_hsv_roi_box_within_subframe() -> None:
     x0, y0, x1, y1 = steerer.roi_box(sub_h=200, sub_w=640)
     assert 0 <= x0 < x1 <= 640
     assert 0 <= y0 < y1 <= 200
+
+
+def test_config_default_steerer_is_hsv() -> None:
+    assert Config().steerer == "hsv"
+
+
+def test_build_steerer_selects_hsv() -> None:
+    assert isinstance(build_steerer(Config(steerer="hsv")), HSVSteerer)
+
+
+def test_build_steerer_selects_brightness() -> None:
+    assert isinstance(build_steerer(Config(steerer="brightness")), OpenCVSteerer)
+
+
+def test_build_steerer_rejects_unknown() -> None:
+    with pytest.raises(ValueError):
+        build_steerer(Config(steerer="rainbow"))

@@ -145,3 +145,14 @@ class HSVSteerer(Steerer):
         e_y = _clamp(2.0 * (hue - cfg.hue_left) / (cfg.hue_right - cfg.hue_left) - 1.0)
         steering = _clamp(-cfg.hue_gain * e_y)
         return SteeringDecision(steering=steering, confidence=confidence, centroid_x=e_y, hue=hue)
+
+
+def build_steerer(config: Config) -> Steerer:
+    """Construct the steerer named by ``config.steerer``."""
+    if config.steerer == "hsv":
+        return HSVSteerer(config)
+    if config.steerer == "brightness":
+        return OpenCVSteerer(config)
+    raise ValueError(
+        f"unknown steerer {config.steerer!r}; expected 'hsv' or 'brightness'"
+    )
