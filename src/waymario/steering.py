@@ -25,9 +25,8 @@ class SteeringDecision:
     """Desired steering, -1 (full left) .. +1 (full right)."""
     confidence: float
     """Fraction of the ROI that read as track (0..1)."""
-    centroid_x: float | None = None
-    """Normalized lateral indicator within the sub-frame, -1..1 (None if no track seen).
-    OpenCVSteerer: track centroid offset. HSVSteerer: cross-track error e_y."""
+    lateral: float | None = None
+    """Normalized lateral indicator within the sub-frame, -1..1 (None if no track seen). OpenCVSteerer: track-centroid offset. HSVSteerer: cross-track error e_y."""
     hue: float | None = None
     """Median OpenCV hue (0..179) sampled by HSVSteerer (None for other steerers)."""
 
@@ -80,7 +79,7 @@ class OpenCVSteerer(Steerer):
         confidence = lit / mask.size if mask.size else 0.0
 
         if confidence < cfg.min_confidence:
-            return SteeringDecision(steering=0.0, confidence=confidence, centroid_x=None)
+            return SteeringDecision(steering=0.0, confidence=confidence, lateral=None)
 
         moments = cv2.moments(mask, binaryImage=True)
         cx = moments["m10"] / moments["m00"]
@@ -88,7 +87,7 @@ class OpenCVSteerer(Steerer):
         offset = (cx - sub_w / 2) / (sub_w / 2)
         steering = _clamp(offset * cfg.steering_gain)
 
-        return SteeringDecision(steering=steering, confidence=confidence, centroid_x=offset)
+        return SteeringDecision(steering=steering, confidence=confidence, lateral=offset)
 
 
 class HSVSteerer(Steerer):
@@ -125,7 +124,7 @@ class HSVSteerer(Steerer):
         x0, y0, x1, y1 = self._patch_bounds(sub_h, sub_w)
         patch = subframe[y0:y1, x0:x1]
         if patch.size == 0:
-            return SteeringDecision(steering=0.0, confidence=0.0, centroid_x=None, hue=None)
+            return SteeringDecision(steering=0.0, confidence=0.0, lateral=None, hue=None)
 
         hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
         h = hsv[:, :, 0]
@@ -139,7 +138,7 @@ class HSVSteerer(Steerer):
 
         if passed.size == 0 or confidence < cfg.min_confidence:
             # No trustworthy colored track in the patch — coast straight.
-            return SteeringDecision(steering=0.0, confidence=confidence, centroid_x=None, hue=None)
+            return SteeringDecision(steering=0.0, confidence=confidence, lateral=None, hue=None)
 
         # Plain median is correct only because the gradient stays within H~0..160 and
         # never crosses the OpenCV red/magenta hue wrap (179->0). Off-track pixels are
@@ -148,10 +147,10 @@ class HSVSteerer(Steerer):
         span = cfg.hue_right - cfg.hue_left
         if span == 0:
             # Misconfigured edge hues — can't form an error; coast (keep the hue diagnostic).
-            return SteeringDecision(steering=0.0, confidence=confidence, centroid_x=None, hue=hue)
+            return SteeringDecision(steering=0.0, confidence=confidence, lateral=None, hue=hue)
         e_y = _clamp(2.0 * (hue - cfg.hue_left) / span - 1.0)
         steering = _clamp(-cfg.hue_gain * e_y)
-        return SteeringDecision(steering=steering, confidence=confidence, centroid_x=e_y, hue=hue)
+        return SteeringDecision(steering=steering, confidence=confidence, lateral=e_y, hue=hue)
 
 
 def build_steerer(config: Config) -> Steerer:

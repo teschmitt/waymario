@@ -91,8 +91,8 @@ def _cmd_preview(args: argparse.Namespace) -> int:
         sub_h, sub_w = sub.shape[:2]
         rx0, ry0, rx1, ry1 = steerer.roi_box(sub_h, sub_w)
         cv2.rectangle(frame, (x0 + rx0, y0 + ry0), (x0 + rx1, y0 + ry1), (0, 255, 0), 1)
-        if decision.centroid_x is not None:
-            cx = x0 + int((decision.centroid_x + 1) / 2 * sub_w)
+        if decision.lateral is not None:
+            cx = x0 + int((decision.lateral + 1) / 2 * sub_w)
             cv2.line(frame, (cx, y0 + ry0), (cx, y0 + ry1), (0, 0, 255), 2)
         _hud(frame, decision, state, phase)
         return frame
@@ -112,8 +112,8 @@ def _cmd_preview(args: argparse.Namespace) -> int:
         # Panel 1 — player subframe with overlay
         p1 = sub.copy()
         cv2.rectangle(p1, (0, top), (sub_w, bottom), (0, 255, 0), 2)
-        if decision.centroid_x is not None:
-            cx = int((decision.centroid_x + 1) / 2 * sub_w)
+        if decision.lateral is not None:
+            cx = int((decision.lateral + 1) / 2 * sub_w)
             cv2.line(p1, (cx, top), (cx, bottom), (0, 0, 255), 2)
         bar_color = (0, 0, 180) if phase != "NORMAL" else (0, 80, 0)
         cv2.rectangle(p1, (0, 0), (sub_w, 36), bar_color, -1)
@@ -145,8 +145,8 @@ def _cmd_preview(args: argparse.Namespace) -> int:
         lit_pct = mask_roi.mean() / 255 * 100
         cv2.putText(p4, f"4: threshold>{config.bright_threshold}  lit={lit_pct:.1f}%",
                     (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 0), 2)
-        if decision.centroid_x is not None:
-            cx = int((decision.centroid_x + 1) / 2 * sub_w)
+        if decision.lateral is not None:
+            cx = int((decision.lateral + 1) / 2 * sub_w)
             cv2.line(p4, (cx, top), (cx, bottom), (0, 0, 255), 2)
 
         # Stack into 2x2 grid

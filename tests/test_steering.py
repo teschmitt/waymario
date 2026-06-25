@@ -56,7 +56,7 @@ def test_black_frame_coasts_straight() -> None:
     frame = np.zeros((200, 640, 3), dtype=np.uint8)
     decision = steerer.decide(frame)
     assert decision.steering == 0.0
-    assert decision.centroid_x is None
+    assert decision.lateral is None
 
 
 def _bgr_for_hue(hue: int, sat: int = 200, val: int = 200) -> tuple[int, int, int]:
@@ -79,7 +79,7 @@ def test_hsv_red_patch_steers_right() -> None:
     steerer = HSVSteerer(Config())
     decision = steerer.decide(_solid_hue_frame(hue=10))
     assert decision.steering > 0
-    assert decision.centroid_x is not None and decision.centroid_x < 0
+    assert decision.lateral is not None and decision.lateral < 0
     assert decision.confidence > 0.9
     assert decision.hue is not None
 
@@ -89,7 +89,7 @@ def test_hsv_purple_patch_steers_left() -> None:
     steerer = HSVSteerer(Config())
     decision = steerer.decide(_solid_hue_frame(hue=135))
     assert decision.steering < 0
-    assert decision.centroid_x is not None and decision.centroid_x > 0
+    assert decision.lateral is not None and decision.lateral > 0
     assert decision.confidence > 0.9
     assert decision.hue is not None
 
@@ -108,7 +108,7 @@ def test_hsv_desaturated_frame_coasts_straight() -> None:
     decision = steerer.decide(frame)
     assert decision.steering == 0.0
     assert decision.hue is None
-    assert decision.centroid_x is None
+    assert decision.lateral is None
 
 
 def test_hsv_partial_patch_has_fractional_confidence() -> None:
@@ -150,4 +150,4 @@ def test_hsv_equal_edge_hues_coasts() -> None:
     steerer = HSVSteerer(Config(hue_left=70.0, hue_right=70.0))
     decision = steerer.decide(_solid_hue_frame(hue=70))
     assert decision.steering == 0.0
-    assert decision.centroid_x is None
+    assert decision.lateral is None
