@@ -33,38 +33,104 @@ def _cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
+
 def _cmd_preview(args: argparse.Namespace) -> int:
     """Show the CV overlay (ROI box, centroid, steering) for tuning. No output sent."""
     import cv2
 
+    from .stream import MJPEGServer
+
     config = Config()
     steerer = OpenCVSteerer(config)
-    with _build_source(args, config) as source:
-        for frame in source.frames():
-            decision = steerer.decide(frame)
-            state = drive_policy(decision, config)
 
-            height, width = frame.shape[:2]
-            top = int(height * config.roi_top)
-            bottom = int(height * config.roi_bottom)
-            cv2.rectangle(frame, (0, top), (width, bottom), (0, 255, 0), 1)
-            if decision.centroid_x is not None:
-                cx = int((decision.centroid_x + 1) / 2 * width)
-                cv2.line(frame, (cx, top), (cx, bottom), (0, 0, 255), 2)
-            cv2.putText(
-                frame,
-                f"steer={decision.steering:+.2f} conf={decision.confidence:.3f} stick={state.stick_x:+d}",
-                (10, 30),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
-                (255, 255, 255),
-                2,
-            )
+    use_stream = args.stream
 
-            cv2.imshow("waymario preview", frame)
-            if cv2.waitKey(1) & 0xFF == ord("q"):
-                break
-    cv2.destroyAllWindows()
+    def _process_frame(frame: "cv2.typing.MatLike") -> "cv2.typing.MatLike":
+        """Annotate frame with ROI box, centroid line and HUD text."""
+        decision = steerer.decide(frame)
+        state = drive_policy(decision, config)
+        height, width = frame.shape[:2]
+        top = int(height * config.roi_top)
+        bottom = int(height * config.roi_bottom)
+        cv2.rectangle(frame, (0, top), (width, bottom), (0, 255, 0), 1)
+        if decision.centroid_x is not None:
+            cx = int((decision.centroid_x + 1) / 2 * width)
+            cv2.line(frame, (cx, top), (cx, bottom), (0, 0, 255), 2)
+        cv2.putText(
+            frame,
+            f"steer={decision.steering:+.2f} conf={decision.confidence:.3f} stick={state.stick_x:+d}",
+            (10, 30),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (255, 255, 255),
+            2,
+        )
+        return frame
+
+    def _debug_mosaic(frame: "cv2.typing.MatLike") -> "cv2.typing.MatLike":
+        """Build a 2x2 mosaic showing every preprocessing step."""
+        import numpy as np
+        decision = steerer.decide(frame)  # run CV once, reuse below
+        state = drive_policy(decision, config)  # noqa: F841 — kept for future HUD use
+        height, width = frame.shape[:2]
+        top = int(height * config.roi_top)
+        bottom = int(height * config.roi_bottom)
+
+        # Panel 1 — original with overlay
+        p1 = frame.copy()
+        cv2.rectangle(p1, (0, top), (width, bottom), (0, 255, 0), 2)
+        if decision.centroid_x is not None:
+            cx = int((decision.centroid_x + 1) / 2 * width)
+            cv2.line(p1, (cx, top), (cx, bottom), (0, 0, 255), 2)
+        cv2.putText(p1, f"1: original  steer={decision.steering:+.2f}",
+                    (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 0), 2)
+
+        # Panel 2 — ROI crop (padded back to full size)
+        roi = frame[top:bottom, :]
+        p2 = np.zeros_like(frame)
+        p2[top:bottom, :] = roi
+        cv2.rectangle(p2, (0, top), (width, bottom), (0, 255, 0), 2)
+        cv2.putText(p2, f"2: ROI  top={config.roi_top:.2f} bot={config.roi_bottom:.2f}",
+                    (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 0), 2)
+
+        # Panel 3 — grayscale (converted back to BGR for stacking)
+        gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        gray_full = np.zeros((height, width), dtype=np.uint8)
+        gray_full[top:bottom, :] = gray_roi
+        p3 = cv2.cvtColor(gray_full, cv2.COLOR_GRAY2BGR)
+        cv2.putText(p3, "3: grayscale",
+                    (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 0), 2)
+
+        # Panel 4 — binary threshold mask
+        _, mask_roi = cv2.threshold(gray_roi, config.bright_threshold, 255, cv2.THRESH_BINARY)
+        mask_full = np.zeros((height, width), dtype=np.uint8)
+        mask_full[top:bottom, :] = mask_roi
+        p4 = cv2.cvtColor(mask_full, cv2.COLOR_GRAY2BGR)
+        lit_pct = mask_roi.mean() / 255 * 100
+        cv2.putText(p4, f"4: threshold>{config.bright_threshold}  lit={lit_pct:.1f}%",
+                    (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 0), 2)
+        if decision.centroid_x is not None:
+            cx = int((decision.centroid_x + 1) / 2 * width)
+            cv2.line(p4, (cx, top), (cx, bottom), (0, 0, 255), 2)
+
+        # Stack into 2x2 grid
+        top_row = np.hstack([p1, p2])
+        bot_row = np.hstack([p3, p4])
+        return np.vstack([top_row, bot_row])
+
+    process = _debug_mosaic if args.debug else _process_frame
+
+    if use_stream:
+        with _build_source(args, config) as source, MJPEGServer(port=args.stream_port) as server:
+            for frame in source.frames():
+                server.push(process(frame))
+    else:
+        with _build_source(args, config) as source:
+            for frame in source.frames():
+                cv2.imshow("waymario preview", process(frame))
+                if cv2.waitKey(1) & 0xFF == ord("q"):
+                    break
+        cv2.destroyAllWindows()
     return 0
 
 
@@ -85,6 +151,23 @@ def main() -> int:
 
     p_preview = sub.add_parser("preview", help="show the CV overlay for tuning (no output)")
     _add_source_args(p_preview)
+    p_preview.add_argument(
+        "--stream",
+        action="store_true",
+        help="serve the overlay as an MJPEG stream instead of opening a local window",
+    )
+    p_preview.add_argument(
+        "--stream-port",
+        type=int,
+        default=8080,
+        metavar="PORT",
+        help="port for the MJPEG HTTP server (default: 8080)",
+    )
+    p_preview.add_argument(
+        "--debug",
+        action="store_true",
+        help="show 2x2 mosaic of preprocessing steps (original / ROI / grayscale / threshold)",
+    )
     p_preview.set_defaults(func=_cmd_preview)
 
     args = parser.parse_args()
