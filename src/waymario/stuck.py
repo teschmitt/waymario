@@ -70,6 +70,7 @@ def _circ_delta(a: float, b: float) -> float:
 class _Phase(Enum):
     NORMAL = auto()
     RECOVER = auto()
+    TURN_AROUND = auto()
 
 
 @dataclass
@@ -83,6 +84,10 @@ class StuckDetector:
     _last_reversed: bool = field(default=False, init=False)   # did it read wrong-way
     _prev_front: np.ndarray | None = field(default=None, init=False)  # last front-box gray
     _last_motion: float = field(default=0.0, init=False)      # last front-box frame diff
+    _recover_streak: int = field(default=0, init=False)         # frames spent in RECOVER
+    _turnaround_frames_left: int = field(default=0, init=False)  # frames remaining in 180
+    _prev_floor_hue: float | None = field(default=None, init=False)
+    _frozen_hue_streak: int = field(default=0, init=False)
 
     # ------------------------------------------------------------------
     # Public API
@@ -98,17 +103,34 @@ class StuckDetector:
         cfg = self.config
         wedged, good_road = self._assess(frame)
 
+        # Track floor hue freeze in all phases.
+        self._update_floor_hue(frame)
+
         if self._phase is _Phase.NORMAL:
             # Arm only on a real wedge: a frozen rail/void, or facing backwards.
             self._absent_streak = self._absent_streak + 1 if wedged else 0
             if self._absent_streak >= max(1, cfg.stuck_frames):
                 self._enter_recover()
                 return self._recovery_state()
+            # Trigger 180 if floor hue has been frozen for too long (kart going in circles).
+            if self._frozen_hue_streak >= max(1, cfg.turnaround_hue_frames):
+                self._enter_turnaround()
+                return self._turnaround_state()
             return None
 
-        # _Phase.RECOVER — keep driving + hard right until the road ahead is genuinely
-        # good again (rainbow present *and* forward); a moving-but-railed view is not
-        # enough to end recovery.
+        if self._phase is _Phase.TURN_AROUND:
+            self._turnaround_frames_left -= 1
+            if self._turnaround_frames_left <= 0:
+                self._exit_turnaround()
+                return None
+            return self._turnaround_state()
+
+        # _Phase.RECOVER — keep driving + hard right until the road clears.
+        # If recovery has been going too long without clearing, escalate to 180.
+        self._recover_streak += 1
+        if self._recover_streak >= max(1, cfg.turnaround_after_recovery_frames):
+            self._enter_turnaround()
+            return self._turnaround_state()
         self._present_streak = self._present_streak + 1 if good_road else 0
         if self._present_streak >= max(1, cfg.recovery_clear_frames):
             self._exit_recover()
@@ -145,8 +167,47 @@ class StuckDetector:
     # ------------------------------------------------------------------
 
     def _recovery_state(self) -> ControllerState:
-        """Keep accelerating (A) and steer hard right; never reverse."""
-        return ControllerState(stick_x=self.config.max_stick, stick_y=0, buttons=Button.A)
+        """Keep accelerating (A) and steer right at recovery_stick strength."""
+        return ControllerState(stick_x=self.config.recovery_stick, stick_y=0, buttons=Button.A)
+
+    def _turnaround_state(self) -> ControllerState:
+        """Reverse (negative stick_y) and steer hard right to spin 180 degrees."""
+        return ControllerState(stick_x=self.config.turnaround_stick, stick_y=-self.config.turnaround_stick, buttons=Button.A)
+
+    def _update_floor_hue(self, frame: np.ndarray) -> None:
+        """Increment frozen_hue_streak if the floor median hue hasn't moved."""
+        cfg = self.config
+        roi = self._front_roi(frame)
+        if roi.size == 0:
+            return
+        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+        h, s, v = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
+        colored = h[(s >= cfg.stuck_min_sat) & (v >= cfg.stuck_min_val)]
+        if colored.size == 0:
+            self._prev_floor_hue = None
+            self._frozen_hue_streak = 0
+            return
+        hue = float(np.median(colored))
+        if self._prev_floor_hue is not None:
+            diff = abs(_circ_delta(self._prev_floor_hue, hue))
+            if diff < cfg.turnaround_hue_diff:
+                self._frozen_hue_streak += 1
+            else:
+                self._frozen_hue_streak = 0
+        self._prev_floor_hue = hue
+
+    def _enter_turnaround(self) -> None:
+        self._phase = _Phase.TURN_AROUND
+        self._recover_streak = 0
+        self._present_streak = 0
+        self._frozen_hue_streak = 0
+        self._turnaround_frames_left = self.config.turnaround_frames
+
+    def _exit_turnaround(self) -> None:
+        self._phase = _Phase.NORMAL
+        self._absent_streak = 0
+        self._recover_streak = 0
+        self._frozen_hue_streak = 0
 
     def _assess(self, frame: np.ndarray) -> tuple[bool, bool]:
         """Read the road ahead once and return ``(wedged, good_road)``.
@@ -290,6 +351,7 @@ class StuckDetector:
         self._phase = _Phase.RECOVER
         self._absent_streak = 0
         self._present_streak = 0
+        self._recover_streak = 0
 
     def _exit_recover(self) -> None:
         self._phase = _Phase.NORMAL

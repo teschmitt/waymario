@@ -56,10 +56,10 @@ class Config:
     catches), "brightness" (centroid of the lit track), or "straight" (debug: no
     steering). Both hsv and brightness steer from a track-centroid offset; they differ
     only in how they segment the track."""
-    roi_top: float = 0.45
+    roi_top: float = 0.30
     """Fraction of the *player's sub-frame* height where the ROI starts (look ahead,
     ignore the sky/HUD above)."""
-    roi_bottom: float = 0.95
+    roi_bottom: float = 0.60
     bright_threshold: int = 60
     """Grayscale value above which a pixel counts as 'track' rather than the
     black starfield."""
@@ -120,7 +120,7 @@ class Config:
     """The front box must be at least this fraction saturated/bright 'track' color
     before its hue spread is judged at all; below it there's no track ahead (a dark
     void off the edge, or noise too sparse to trust), which also counts as stuck."""
-    stuck_static_max_diff: float = 5.0
+    stuck_static_max_diff: float = 15.0
     """Mean absolute grayscale frame-to-frame difference in the front box below which
     the view counts as *frozen*. A rail/void ahead only arms recovery when the view is
     also this still — a kart wedged against a wall makes no forward progress so its
@@ -133,6 +133,20 @@ class Config:
     recovery_clear_frames: int = 8
     """Consecutive frames the rainbow track must be visible again before recovery
     ends and normal steering resumes (hysteresis, ~0.13 s at 60 fps)."""
+    recovery_stick: int = 40
+    """Analog stick magnitude during normal rail recovery (softer than max_stick)."""
+
+    # --- 180-degree turnaround (hue-freeze detection) ---
+    turnaround_after_recovery_frames: int = 120
+    """Consecutive frames in RECOVER phase before escalating to a 180 turnaround (~2s at 60fps)."""
+    turnaround_hue_frames: int = 90
+    """Consecutive frames the floor hue must stay frozen in NORMAL phase before a 180 triggers (~1.5s at 60fps)."""
+    turnaround_hue_diff: float = 8.0
+    """Minimum circular hue change between frames to count as 'moving'."""
+    turnaround_frames: int = 60
+    """How many frames to hold the 180 manoeuvre (reverse + hard right)."""
+    turnaround_stick: int = 80
+    """Analog stick magnitude during the 180 turn."""
 
     # --- wrong-way (reversed-rainbow) detection ---
     # Rainbow Road's stripes run across the track; driven forward, their colours
