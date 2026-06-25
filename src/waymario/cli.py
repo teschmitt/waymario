@@ -6,11 +6,40 @@ import argparse
 
 from .capture import CaptureDeviceSource, FrameSource, VideoFileSource
 from .config import Config
-from .control import drive_policy
+from .control import Button, ControllerState, drive_policy
 from .drive import run
 from .steering import OpenCVSteerer
 from .stuck import StuckDetector
 from .transport import ControllerLink, NullLink, SerialLink
+
+# Button chips drawn in the preview HUD, in controller-ish order. Each lights up
+# when the corresponding bit is set in the controller state.
+_BUTTON_DISPLAY: list[tuple[str, Button]] = [
+    ("A", Button.A),
+    ("B", Button.B),
+    ("Z", Button.Z),
+    ("L", Button.L),
+    ("R", Button.R),
+    ("ST", Button.START),
+    ("C^", Button.C_UP),
+    ("Cv", Button.C_DOWN),
+    ("C<", Button.C_LEFT),
+    ("C>", Button.C_RIGHT),
+]
+
+
+def _draw_buttons(img, state: ControllerState, x: int, y: int) -> None:
+    """Draw a row of button chips at image-local (x, y); pressed ones light up green."""
+    import cv2
+
+    cw, ch, gap = 32, 22, 4
+    for i, (label, bit) in enumerate(_BUTTON_DISPLAY):
+        pressed = bool(state.buttons & bit)
+        bx = x + i * (cw + gap)
+        cv2.rectangle(img, (bx, y), (bx + cw, y + ch), (0, 200, 0) if pressed else (45, 45, 45), -1)
+        cv2.rectangle(img, (bx, y), (bx + cw, y + ch), (210, 210, 210), 1)
+        cv2.putText(img, label, (bx + 4, y + ch - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
+                    (255, 255, 255) if pressed else (140, 140, 140), 1)
 
 
 def _build_source(args: argparse.Namespace, config: Config) -> FrameSource:
@@ -82,6 +111,7 @@ def _cmd_preview(args: argparse.Namespace) -> int:
         )
         cv2.putText(frame, text, (x0 + 8, y0 + 26),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        _draw_buttons(frame, state, x0 + 8, y0 + 42)
 
     def _process_frame(frame: "cv2.typing.MatLike") -> "cv2.typing.MatLike":
         """Annotate frame with ROI box, centroid line, HUD and stuck state."""
@@ -123,6 +153,7 @@ def _cmd_preview(args: argparse.Namespace) -> int:
         cv2.putText(p1,
                     f"1:[{phase}] conf={decision.confidence:.3f} steer={decision.steering:+.2f} stick=({state.stick_x:+d},{state.stick_y:+d})",
                     (8, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2)
+        _draw_buttons(p1, state, 8, 42)
 
         # Panel 2 — ROI crop (padded back to subframe size)
         roi = sub[top:bottom, :]

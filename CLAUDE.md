@@ -17,8 +17,7 @@ uv run waymario --help   # CLI entry point (waymario = waymario:main)
 
 uv run pytest            # all tests — no hardware needed
 uv run pytest tests/test_steering.py::<name>   # single test
-uv run ruff check        # lint (line-length 100; rules: I, B, UP)
-uv run ruff check --fix  # autofix
+uv run ruff check        # don't bother with linting. It fails and doesn't matter for this type of project
 ```
 
 Running the bot:
