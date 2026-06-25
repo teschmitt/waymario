@@ -72,6 +72,18 @@ class Config:
     serial_port: str = "/dev/ttyACM0"
     baud: int = 115200
 
+    # --- stuck detection & recovery ---
+    stuck_frames: int = 90
+    """Consecutive frames of no motion *or* no track before recovery triggers.
+    At 60 fps this is 1.5 s."""
+    stuck_frame_diff_threshold: float = 2.0
+    """Mean absolute pixel difference below which a frame counts as 'no motion'.
+    0 = pixel-perfect identical; ~2 tolerates compression noise."""
+    recovery_reverse_frames: int = 60
+    """Frames to hold B (reverse) at the start of recovery (~1 s at 60 fps)."""
+    recovery_turn_frames: int = 45
+    """Frames to hold B + full stick while turning out of the wall (~0.75 s)."""
+
     # --- loop ---
     target_fps: float = 60.0
 
