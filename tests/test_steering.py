@@ -13,6 +13,7 @@ from waymario.steering import HSVSteerer, OpenCVSteerer, SteeringDecision, build
 def test_steering_decision_has_hue_field_defaulting_none() -> None:
     d = SteeringDecision(steering=0.0, confidence=0.0)
     assert d.hue is None
+    assert SteeringDecision(steering=0.0, confidence=0.0, hue=42.0).hue == 42.0
 
 
 def test_opencv_roi_box_is_full_width_band() -> None:
@@ -89,6 +90,8 @@ def test_hsv_purple_patch_steers_left() -> None:
     decision = steerer.decide(_solid_hue_frame(hue=135))
     assert decision.steering < 0
     assert decision.centroid_x is not None and decision.centroid_x > 0
+    assert decision.confidence > 0.9
+    assert decision.hue is not None
 
 
 def test_hsv_center_hue_goes_straight() -> None:
@@ -115,6 +118,7 @@ def test_hsv_partial_patch_has_fractional_confidence() -> None:
     steerer = HSVSteerer(Config())
     decision = steerer.decide(frame)
     assert 0.2 < decision.confidence < 0.8
+    assert decision.steering > 0  # red pixels present -> steers right
 
 
 def test_hsv_roi_box_within_subframe() -> None:
@@ -139,3 +143,11 @@ def test_build_steerer_selects_brightness() -> None:
 def test_build_steerer_rejects_unknown() -> None:
     with pytest.raises(ValueError):
         build_steerer(Config(steerer="rainbow"))
+
+
+def test_hsv_equal_edge_hues_coasts() -> None:
+    # Misconfigured equal edge hues must coast, not raise ZeroDivisionError.
+    steerer = HSVSteerer(Config(hue_left=70.0, hue_right=70.0))
+    decision = steerer.decide(_solid_hue_frame(hue=70))
+    assert decision.steering == 0.0
+    assert decision.centroid_x is None

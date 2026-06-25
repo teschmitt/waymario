@@ -141,8 +141,15 @@ class HSVSteerer(Steerer):
             # No trustworthy colored track in the patch — coast straight.
             return SteeringDecision(steering=0.0, confidence=confidence, centroid_x=None, hue=None)
 
+        # Plain median is correct only because the gradient stays within H~0..160 and
+        # never crosses the OpenCV red/magenta hue wrap (179->0). Off-track pixels are
+        # already removed by the S/V gate above.
         hue = float(np.median(passed))
-        e_y = _clamp(2.0 * (hue - cfg.hue_left) / (cfg.hue_right - cfg.hue_left) - 1.0)
+        span = cfg.hue_right - cfg.hue_left
+        if span == 0:
+            # Misconfigured edge hues — can't form an error; coast (keep the hue diagnostic).
+            return SteeringDecision(steering=0.0, confidence=confidence, centroid_x=None, hue=hue)
+        e_y = _clamp(2.0 * (hue - cfg.hue_left) / span - 1.0)
         steering = _clamp(-cfg.hue_gain * e_y)
         return SteeringDecision(steering=steering, confidence=confidence, centroid_x=e_y, hue=hue)
 

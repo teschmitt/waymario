@@ -42,7 +42,6 @@ def _cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
-
 def _cmd_preview(args: argparse.Namespace) -> int:
     """Show the CV overlay (ROI box, centroid, steering) for tuning. No output sent."""
     import cv2
