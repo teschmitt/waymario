@@ -155,16 +155,27 @@ def _cmd_preview(args: argparse.Namespace) -> int:
 
     process = _debug_mosaic if args.debug else _process_frame
 
+    import time
+    frame_period = 1.0 / args.stream_fps
+
     if use_stream:
         with _build_source(args, config) as source, MJPEGServer(port=args.stream_port) as server:
             for frame in source.frames():
+                t0 = time.monotonic()
                 server.push(process(frame))
+                elapsed = time.monotonic() - t0
+                if elapsed < frame_period:
+                    time.sleep(frame_period - elapsed)
     else:
         with _build_source(args, config) as source:
             for frame in source.frames():
+                t0 = time.monotonic()
                 cv2.imshow("waymario preview", process(frame))
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     break
+                elapsed = time.monotonic() - t0
+                if elapsed < frame_period:
+                    time.sleep(frame_period - elapsed)
         cv2.destroyAllWindows()
     return 0
 
@@ -218,6 +229,13 @@ def main() -> int:
         default=8080,
         metavar="PORT",
         help="port for the MJPEG HTTP server (default: 8080)",
+    )
+    p_preview.add_argument(
+        "--stream-fps",
+        type=float,
+        default=15.0,
+        metavar="FPS",
+        help="max frames per second to push to the stream (default: 15)",
     )
     p_preview.add_argument(
         "--debug",
